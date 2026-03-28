@@ -1,4 +1,4 @@
-﻿package com.knox.spoof
+package com.knox.spoof
 
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XposedHelpers
@@ -6,47 +6,83 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 import de.robv.android.xposed.XC_MethodHook
 
 class SamsungSpoofer : IXposedHookLoadPackage {
-    override fun handleLoadPackage(lpparam: LoadPackageParam) {
-        // Список всех пакетов, связанных с Samsung Wearable
-        val targetApps = setOf(
-            "com.samsung.android.app.watchmanager",
-            "com.samsung.android.geargplugin",
-            "com.samsung.android.gear2plugin",
-            "com.samsung.android.modenplugin",
-            "com.samsung.android.app.twatchmanager"
+
+    companion object {
+        const val MODEL        = "SM-S928B"
+        const val BRAND        = "samsung"
+        const val MANUFACTURER = "Samsung"
+        const val PRODUCT      = "e3qxbe"
+        const val DEVICE       = "e3q"
+        const val BOARD        = "e3q"
+
+        val PROP_MAP = mapOf(
+            "ro.product.model"        to MODEL,
+            "ro.product.brand"        to BRAND,
+            "ro.product.manufacturer" to MANUFACTURER,
+            "ro.product.name"         to PRODUCT,
+            "ro.product.device"       to DEVICE,
+            "ro.product.board"        to BOARD,
+            "ro.build.characteristics" to "phone",
+            "ro.product.marketname"   to "Samsung Galaxy S24 Ultra"
         )
+    }
 
-        if (lpparam.packageName !in targetApps) return
+    // Все пакеты Samsung Wearable / Galaxy Watch Manager
+    private val TARGET_APPS = setOf(
+        "com.samsung.android.app.watchmanager",
+        "com.samsung.android.geargplugin",
+        "com.samsung.android.gear2plugin",
+        "com.samsung.android.modenplugin",
+        "com.samsung.android.app.twatchmanager"
+    )
 
-        // Параметры S24 Ultra (SM-S928B)
-        val model = "SM-S928B"
-        val brand = "samsung"
-        val manufacturer = "Samsung"
+    override fun handleLoadPackage(lpparam: LoadPackageParam) {
+        if (lpparam.packageName !in TARGET_APPS) return
 
-        // 1. Хукаем поля в android.os.Build
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "MANUFACTURER", manufacturer)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "BRAND", brand)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "MODEL", model)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "PRODUCT", "e3qxbe")
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "DEVICE", "e3q")
+        spoofBuildFields()
+        hookSystemProperties(lpparam)
+    }
 
-        // 2. Хукаем SystemProperties.get()
+    // Патчим статические поля android.os.Build
+    private fun spoofBuildFields() {
+        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "MANUFACTURER", MANUFACTURER)
+        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "BRAND",        BRAND)
+        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "MODEL",        MODEL)
+        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "PRODUCT",      PRODUCT)
+        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "DEVICE",       DEVICE)
+        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "BOARD",        BOARD)
+    }
+
+    // Хукаем SystemProperties.get() — обе перегрузки
+    private fun hookSystemProperties(lpparam: LoadPackageParam) {
+        val hook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val key = param.args[0] as? String ?: return
+                PROP_MAP[key]?.let { param.result = it }
+            }
+        }
+
+        // get(String)
         try {
             XposedHelpers.findAndHookMethod(
                 "android.os.SystemProperties",
                 lpparam.classLoader,
                 "get",
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        when (param.args[0] as String) {
-                            "ro.product.model" -> param.result = model
-                            "ro.product.brand" -> param.result = brand
-                            "ro.product.manufacturer" -> param.result = manufacturer
-                        }
-                    }
-                }
+                hook
             )
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
+
+        // get(String, String) — с дефолтным значением
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.os.SystemProperties",
+                lpparam.classLoader,
+                "get",
+                String::class.java,
+                String::class.java,
+                hook
+            )
+        } catch (_: Exception) {}
     }
 }
