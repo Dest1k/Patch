@@ -15,9 +15,10 @@ class SamsungSpoofer : IXposedHookLoadPackage {
         const val PRODUCT      = "e3qxbe"
         const val DEVICE       = "e3q"
         const val BOARD        = "e3q"
+        // Реальный fingerprint Samsung Galaxy S24 Ultra
+        const val FINGERPRINT  = "samsung/e3qxbe/e3q:14/UP1A.231005.007/S928BXXU2AXK2:user/release-keys"
 
         val PROP_MAP = mapOf(
-            // Идентификация устройства
             "ro.product.model"          to MODEL,
             "ro.product.brand"          to BRAND,
             "ro.product.manufacturer"   to MANUFACTURER,
@@ -26,14 +27,23 @@ class SamsungSpoofer : IXposedHookLoadPackage {
             "ro.product.board"          to BOARD,
             "ro.build.characteristics"  to "phone",
             "ro.product.marketname"     to "Samsung Galaxy S24 Ultra",
-            // Knox / целостность системы
+            "ro.build.fingerprint"      to FINGERPRINT,
+            "ro.build.tags"             to "release-keys",
+            "ro.build.type"             to "user",
             "ro.boot.verifiedbootstate" to "green",
             "ro.boot.flash.locked"      to "1",
             "ro.debuggable"             to "0",
             "ro.secure"                 to "1",
-            "ro.build.tags"             to "release-keys",
-            "ro.build.type"             to "user",
             "ro.knox.bitmask"           to "0"
+        )
+
+        // Samsung-специфичные фичи, которые должны быть на Samsung-устройстве
+        val SAMSUNG_FEATURES = setOf(
+            "com.samsung.feature.samsung_experience_mobile",
+            "com.samsung.feature.samsung_experience_mobile_lite",
+            "com.sec.feature.multi_window_controller",
+            "com.sec.feature.cocktailpanel",
+            "com.samsung.feature.aremoji"
         )
     }
 
@@ -51,18 +61,25 @@ class SamsungSpoofer : IXposedHookLoadPackage {
         spoofBuildFields()
         hookSystemProperties(lpparam)
         hookKnox(lpparam)
+        hookPackageManager(lpparam)
+        hookTelephony(lpparam)
     }
 
     private fun spoofBuildFields() {
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "MANUFACTURER", MANUFACTURER)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "BRAND",        BRAND)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "MODEL",        MODEL)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "PRODUCT",      PRODUCT)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "DEVICE",       DEVICE)
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "BOARD",        BOARD)
-        // Признаки подписанной production-сборки
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "TAGS", "release-keys")
-        XposedHelpers.setStaticObjectField(android.os.Build::class.java, "TYPE", "user")
+        mapOf(
+            "MANUFACTURER" to MANUFACTURER,
+            "BRAND"        to BRAND,
+            "MODEL"        to MODEL,
+            "PRODUCT"      to PRODUCT,
+            "DEVICE"       to DEVICE,
+            "BOARD"        to BOARD,
+            "TAGS"         to "release-keys",
+            "TYPE"         to "user",
+            "FINGERPRINT"  to FINGERPRINT
+        ).forEach { (field, value) ->
+            try { XposedHelpers.setStaticObjectField(android.os.Build::class.java, field, value) }
+            catch (_: Exception) {}
+        }
     }
 
     private fun hookSystemProperties(lpparam: LoadPackageParam) {
@@ -73,72 +90,86 @@ class SamsungSpoofer : IXposedHookLoadPackage {
             }
         }
 
-        // android.os.SystemProperties.get(String)
-        try {
-            XposedHelpers.findAndHookMethod(
-                "android.os.SystemProperties", lpparam.classLoader,
-                "get", String::class.java, hook)
-        } catch (_: Exception) {}
-
-        // android.os.SystemProperties.get(String, String)
-        try {
-            XposedHelpers.findAndHookMethod(
-                "android.os.SystemProperties", lpparam.classLoader,
-                "get", String::class.java, String::class.java, hook)
-        } catch (_: Exception) {}
-
-        // Samsung-specific: com.samsung.android.os.SemSystemProperties
-        try {
-            XposedHelpers.findAndHookMethod(
-                "com.samsung.android.os.SemSystemProperties", lpparam.classLoader,
-                "get", String::class.java, hook)
-        } catch (_: Exception) {}
-
-        try {
-            XposedHelpers.findAndHookMethod(
-                "com.samsung.android.os.SemSystemProperties", lpparam.classLoader,
-                "get", String::class.java, String::class.java, hook)
-        } catch (_: Exception) {}
+        val argVariants = listOf(
+            arrayOf<Class<*>>(String::class.java),
+            arrayOf<Class<*>>(String::class.java, String::class.java)
+        )
+        for (clsName in listOf(
+            "android.os.SystemProperties",
+            "com.samsung.android.os.SemSystemProperties"
+        )) {
+            for (args in argVariants) {
+                try {
+                    XposedHelpers.findAndHookMethod(clsName, lpparam.classLoader, "get", *args, hook)
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun hookKnox(lpparam: LoadPackageParam) {
-        // isDeviceRooted() → false
+        data class Stub(val cls: String, val method: String, val ret: Any)
+        listOf(
+            Stub("com.samsung.android.knox.EnterpriseDeviceManager", "isDeviceRooted",  false),
+            Stub("com.samsung.android.knox.EnterpriseDeviceManager", "getWarrantyBit",  0),
+            Stub("com.samsung.android.knox.EnterpriseDeviceManager", "getKnoxVersion",  "Knox 3.10"),
+            Stub("com.samsung.android.knox.integrity.PolicyEnforcer", "getRKPState",    0),
+            Stub("com.samsung.android.knox.integrity.PolicyEnforcer", "isDeviceRKP",    false)
+        ).forEach { (cls, method, ret) ->
+            try {
+                XposedHelpers.findAndHookMethod(
+                    cls, lpparam.classLoader, method,
+                    XC_MethodReplacement.returnConstant(ret)
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Спуфим наличие Samsung-фич и подпись пакета
+    private fun hookPackageManager(lpparam: LoadPackageParam) {
         try {
             XposedHelpers.findAndHookMethod(
-                "com.samsung.android.knox.EnterpriseDeviceManager",
+                "android.app.ApplicationPackageManager",
                 lpparam.classLoader,
-                "isDeviceRooted",
-                XC_MethodReplacement.returnConstant(false)
+                "hasSystemFeature",
+                String::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val feature = param.args[0] as? String ?: return
+                        if (feature in SAMSUNG_FEATURES) param.result = true
+                    }
+                }
             )
         } catch (_: Exception) {}
 
-        // getKnoxVersion() → имитируем оригинальное устройство
+        // Скрываем переподписанный APK: не возвращаем сигнатуру для целевых пакетов
         try {
             XposedHelpers.findAndHookMethod(
-                "com.samsung.android.knox.EnterpriseDeviceManager",
+                "android.app.ApplicationPackageManager",
                 lpparam.classLoader,
-                "getKnoxVersion",
-                XC_MethodReplacement.returnConstant("Knox 3.10")
+                "getPackageInfo",
+                String::class.java,
+                Int::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val pkgName = param.args[0] as? String ?: return
+                        if (pkgName !in TARGET_APPS) return
+                        val info = param.result as? android.content.pm.PackageInfo ?: return
+                        @Suppress("DEPRECATION")
+                        info.signatures = arrayOf()
+                    }
+                }
             )
         } catch (_: Exception) {}
+    }
 
-        // getWarrantyBit() / checkWarrantyBit() → 0 (не изменено)
+    // Тип телефона = GSM (1), чтобы приложение видело устройство как телефон
+    private fun hookTelephony(lpparam: LoadPackageParam) {
         try {
             XposedHelpers.findAndHookMethod(
-                "com.samsung.android.knox.EnterpriseDeviceManager",
+                "android.telephony.TelephonyManager",
                 lpparam.classLoader,
-                "getWarrantyBit",
-                XC_MethodReplacement.returnConstant(0)
-            )
-        } catch (_: Exception) {}
-
-        // RKP / attestation state
-        try {
-            XposedHelpers.findAndHookMethod(
-                "com.samsung.android.knox.integrity.PolicyEnforcer",
-                lpparam.classLoader,
-                "getRKPState",
-                XC_MethodReplacement.returnConstant(0)
+                "getPhoneType",
+                XC_MethodReplacement.returnConstant(1) // PHONE_TYPE_GSM
             )
         } catch (_: Exception) {}
     }
