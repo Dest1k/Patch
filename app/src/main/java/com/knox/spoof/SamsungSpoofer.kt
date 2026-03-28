@@ -15,7 +15,6 @@ class SamsungSpoofer : IXposedHookLoadPackage {
         const val PRODUCT      = "e3qxbe"
         const val DEVICE       = "e3q"
         const val BOARD        = "e3q"
-        // Реальный fingerprint Samsung Galaxy S24 Ultra
         const val FINGERPRINT  = "samsung/e3qxbe/e3q:14/UP1A.231005.007/S928BXXU2AXK2:user/release-keys"
 
         val PROP_MAP = mapOf(
@@ -37,7 +36,6 @@ class SamsungSpoofer : IXposedHookLoadPackage {
             "ro.knox.bitmask"           to "0"
         )
 
-        // Samsung-специфичные фичи, которые должны быть на Samsung-устройстве
         val SAMSUNG_FEATURES = setOf(
             "com.samsung.feature.samsung_experience_mobile",
             "com.samsung.feature.samsung_experience_mobile_lite",
@@ -89,49 +87,68 @@ class SamsungSpoofer : IXposedHookLoadPackage {
                 PROP_MAP[key]?.let { param.result = it }
             }
         }
-
-        val argVariants = listOf(
-            arrayOf<Class<*>>(String::class.java),
-            arrayOf<Class<*>>(String::class.java, String::class.java)
-        )
-        for (clsName in listOf(
+        for (cls in listOf(
             "android.os.SystemProperties",
             "com.samsung.android.os.SemSystemProperties"
         )) {
-            for (args in argVariants) {
-                try {
-                    XposedHelpers.findAndHookMethod(clsName, lpparam.classLoader, "get", *args, hook)
-                } catch (_: Exception) {}
+            for (args in listOf(
+                arrayOf<Class<*>>(String::class.java),
+                arrayOf<Class<*>>(String::class.java, String::class.java)
+            )) {
+                try { XposedHelpers.findAndHookMethod(cls, lpparam.classLoader, "get", *args, hook) }
+                catch (_: Exception) {}
             }
         }
     }
 
     private fun hookKnox(lpparam: LoadPackageParam) {
+        val EDM = "com.samsung.android.knox.EnterpriseDeviceManager"
+
+        // На не-Samsung устройствах getInstance() возвращает null,
+        // поэтому хуки на instance-методы никогда не срабатывают.
+        // Создаём объект через Unsafe без вызова конструктора.
+        try {
+            val edmClass = XposedHelpers.findClass(EDM, lpparam.classLoader)
+            XposedHelpers.findAndHookMethod(
+                edmClass,
+                "getInstance",
+                android.content.Context::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (param.result != null) return
+                        try {
+                            val unsafeCls = Class.forName("sun.misc.Unsafe")
+                            val theUnsafe = unsafeCls.getDeclaredField("theUnsafe")
+                                .also { it.isAccessible = true }.get(null)
+                            param.result = unsafeCls
+                                .getMethod("allocateInstance", Class::class.java)
+                                .invoke(theUnsafe, edmClass)
+                        } catch (_: Exception) {}
+                    }
+                }
+            )
+        } catch (_: Exception) {}
+
         data class Stub(val cls: String, val method: String, val ret: Any)
         listOf(
-            Stub("com.samsung.android.knox.EnterpriseDeviceManager", "isDeviceRooted",  false),
-            Stub("com.samsung.android.knox.EnterpriseDeviceManager", "getWarrantyBit",  0),
-            Stub("com.samsung.android.knox.EnterpriseDeviceManager", "getKnoxVersion",  "Knox 3.10"),
-            Stub("com.samsung.android.knox.integrity.PolicyEnforcer", "getRKPState",    0),
-            Stub("com.samsung.android.knox.integrity.PolicyEnforcer", "isDeviceRKP",    false)
+            Stub(EDM, "isDeviceRooted", false),
+            Stub(EDM, "getWarrantyBit", 0),
+            Stub(EDM, "getKnoxVersion", "Knox 3.10"),
+            Stub("com.samsung.android.knox.integrity.PolicyEnforcer", "getRKPState", 0),
+            Stub("com.samsung.android.knox.integrity.PolicyEnforcer", "isDeviceRKP",  false)
         ).forEach { (cls, method, ret) ->
             try {
-                XposedHelpers.findAndHookMethod(
-                    cls, lpparam.classLoader, method,
-                    XC_MethodReplacement.returnConstant(ret)
-                )
+                XposedHelpers.findAndHookMethod(cls, lpparam.classLoader, method,
+                    XC_MethodReplacement.returnConstant(ret))
             } catch (_: Exception) {}
         }
     }
 
-    // Спуфим наличие Samsung-фич и подпись пакета
     private fun hookPackageManager(lpparam: LoadPackageParam) {
         try {
             XposedHelpers.findAndHookMethod(
-                "android.app.ApplicationPackageManager",
-                lpparam.classLoader,
-                "hasSystemFeature",
-                String::class.java,
+                "android.app.ApplicationPackageManager", lpparam.classLoader,
+                "hasSystemFeature", String::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val feature = param.args[0] as? String ?: return
@@ -141,36 +158,38 @@ class SamsungSpoofer : IXposedHookLoadPackage {
             )
         } catch (_: Exception) {}
 
-        // Скрываем переподписанный APK: не возвращаем сигнатуру для целевых пакетов
+        val signHook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val pkgName = param.args[0] as? String ?: return
+                if (pkgName !in TARGET_APPS) return
+                val info = param.result as? android.content.pm.PackageInfo ?: return
+                @Suppress("DEPRECATION")
+                info.signatures = arrayOf()
+                try { XposedHelpers.setObjectField(info, "signingInfo", null) } catch (_: Exception) {}
+            }
+        }
         try {
             XposedHelpers.findAndHookMethod(
-                "android.app.ApplicationPackageManager",
-                lpparam.classLoader,
-                "getPackageInfo",
-                String::class.java,
-                Int::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val pkgName = param.args[0] as? String ?: return
-                        if (pkgName !in TARGET_APPS) return
-                        val info = param.result as? android.content.pm.PackageInfo ?: return
-                        @Suppress("DEPRECATION")
-                        info.signatures = arrayOf()
-                    }
-                }
-            )
+                "android.app.ApplicationPackageManager", lpparam.classLoader,
+                "getPackageInfo", String::class.java, Int::class.java, signHook)
+        } catch (_: Exception) {}
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager", lpparam.classLoader,
+                "getPackageInfo", String::class.java,
+                XposedHelpers.findClass(
+                    "android.content.pm.PackageManager\$PackageInfoFlags",
+                    lpparam.classLoader),
+                signHook)
         } catch (_: Exception) {}
     }
 
-    // Тип телефона = GSM (1), чтобы приложение видело устройство как телефон
     private fun hookTelephony(lpparam: LoadPackageParam) {
         try {
             XposedHelpers.findAndHookMethod(
-                "android.telephony.TelephonyManager",
-                lpparam.classLoader,
+                "android.telephony.TelephonyManager", lpparam.classLoader,
                 "getPhoneType",
-                XC_MethodReplacement.returnConstant(1) // PHONE_TYPE_GSM
-            )
+                XC_MethodReplacement.returnConstant(1))
         } catch (_: Exception) {}
     }
 }
