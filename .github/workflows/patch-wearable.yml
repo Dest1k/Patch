@@ -1,13 +1,5 @@
 name: Patch Samsung Wearable APK
 
-# Как пользоваться:
-#   1. Зайди в репозиторий
-#   2. Нажми "Add file" -> "Upload files"
-#   3. Перетащи сюда wearable.apk
-#   4. Нажми Commit changes
-#   5. Actions запустится автоматически
-#   6. Скачай готовый APK из Artifacts
-
 on:
   push:
     paths:
@@ -27,33 +19,68 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download apktool
+      - name: Download baksmali & smali
         run: |
-          curl -L -o apktool.jar \
-            https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
+          curl -L -o baksmali.jar \
+            https://github.com/JesusFreke/smali/releases/download/v2.5.2/baksmali-2.5.2.jar
+          curl -L -o smali.jar \
+            https://github.com/JesusFreke/smali/releases/download/v2.5.2/smali-2.5.2.jar
 
-      - name: Decompile APK
-        run: java -jar apktool.jar d wearable.apk -o decompiled -f
+      - name: Unpack APK
+        run: |
+          mkdir apk_out
+          unzip -q wearable.apk -d apk_out
+          echo "=== APK contents ==="
+          ls apk_out/*.dex 2>/dev/null || echo "No dex files found"
+
+      - name: Decompile DEX to smali
+        run: |
+          mkdir -p smali_src
+          for dex in apk_out/classes*.dex; do
+            [ -f "$dex" ] || continue
+            name=$(basename "$dex" .dex)
+            echo "Decompiling $name ..."
+            java -jar baksmali.jar d "$dex" -o "smali_src/$name"
+          done
 
       - name: Patch smali
-        run: python3 patch/patch_wearable.py decompiled/
-
-      - name: Recompile APK
         run: |
-          java -jar apktool.jar b decompiled -o wearable_unsigned.apk -f --use-aapt2 \
-            || java -jar apktool.jar b decompiled -o wearable_unsigned.apk -f
+          python3 patch/patch_wearable.py smali_src/
 
-      - name: Generate keystore & sign
+      - name: Recompile smali to DEX
         run: |
+          for dir in smali_src/classes*; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            echo "Compiling $name ..."
+            java -jar smali.jar a "$dir" -o "apk_out/$name.dex"
+          done
+
+      - name: Repack APK
+        run: |
+          cd apk_out
+          zip -q -r ../wearable_unsigned.apk .
+          cd ..
+          echo "Repacked size: $(du -sh wearable_unsigned.apk)"
+
+      - name: Align & sign APK
+        run: |
+          APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -V | tail -1)
+          ZIPALIGN=$(find $ANDROID_SDK_ROOT/build-tools -name zipalign | sort -V | tail -1)
+
+          $ZIPALIGN -p 4 wearable_unsigned.apk wearable_aligned.apk
+
           keytool -genkey -v \
             -keystore patch.keystore -alias patch \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Patch,OU=Patch,O=Patch,L=X,ST=X,C=US" \
             -storepass patchpass -keypass patchpass -noprompt
-          APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -V | tail -1)
+
           $APKSIGNER sign \
             --ks patch.keystore --ks-pass pass:patchpass --key-pass pass:patchpass \
-            --out wearable_patched.apk wearable_unsigned.apk
+            --out wearable_patched.apk wearable_aligned.apk
+
+          echo "Final size: $(du -sh wearable_patched.apk)"
 
       - name: Upload patched APK
         uses: actions/upload-artifact@v4
