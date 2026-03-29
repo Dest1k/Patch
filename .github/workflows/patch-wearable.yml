@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'wearable.apk'
+  workflow_dispatch:  # можно запустить вручную из вкладки Actions
 
 jobs:
   patch:
@@ -30,8 +31,8 @@ jobs:
         run: |
           mkdir apk_out
           unzip -q wearable.apk -d apk_out
-          echo "=== APK contents ==="
-          ls apk_out/*.dex 2>/dev/null || echo "No dex files found"
+          echo "=== DEX files ==="
+          ls apk_out/*.dex 2>/dev/null || echo "No dex files found!"
 
       - name: Decompile DEX to smali
         run: |
@@ -44,8 +45,7 @@ jobs:
           done
 
       - name: Patch smali
-        run: |
-          python3 patch/patch_wearable.py smali_src/
+        run: python3 patch/patch_wearable.py smali_src/
 
       - name: Recompile smali to DEX
         run: |
@@ -58,31 +58,24 @@ jobs:
 
       - name: Repack APK
         run: |
-          cd apk_out
-          zip -q -r ../wearable_unsigned.apk .
-          cd ..
-          echo "Repacked size: $(du -sh wearable_unsigned.apk)"
+          cd apk_out && zip -q -r ../wearable_unsigned.apk . && cd ..
+          echo "Repacked: $(du -sh wearable_unsigned.apk)"
 
-      - name: Align & sign APK
+      - name: Align & sign
         run: |
           APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -V | tail -1)
-          ZIPALIGN=$(find $ANDROID_SDK_ROOT/build-tools -name zipalign | sort -V | tail -1)
-
+          ZIPALIGN=$(find $ANDROID_SDK_ROOT/build-tools -name zipalign   | sort -V | tail -1)
           $ZIPALIGN -p 4 wearable_unsigned.apk wearable_aligned.apk
-
-          keytool -genkey -v \
-            -keystore patch.keystore -alias patch \
+          keytool -genkey -v -keystore patch.keystore -alias patch \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Patch,OU=Patch,O=Patch,L=X,ST=X,C=US" \
             -storepass patchpass -keypass patchpass -noprompt
-
           $APKSIGNER sign \
             --ks patch.keystore --ks-pass pass:patchpass --key-pass pass:patchpass \
             --out wearable_patched.apk wearable_aligned.apk
+          echo "Done: $(du -sh wearable_patched.apk)"
 
-          echo "Final size: $(du -sh wearable_patched.apk)"
-
-      - name: Upload patched APK
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: samsung-wearable-patched
