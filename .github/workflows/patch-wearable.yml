@@ -25,40 +25,25 @@ jobs:
           wget -q -O apktool.jar \
             https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
 
-      - name: Decompile full (with resources for analysis)
+      - name: Decompile full (with resources)
         run: |
           java -jar apktool.jar d -f wearable.apk -o decompiled_full 2>&1 | tail -5
           echo "Smali files: $(find decompiled_full/smali* -name '*.smali' 2>/dev/null | wc -l)"
 
-      - name: Find error strings in resources
+      - name: Find error strings
         run: |
           echo "=== Matching string entries ==="
-          find decompiled_full/res -name '*.xml' 2>/dev/null | \
-            xargs grep -hi 'unauthori\|tamper\|modif.*os\|os.*modif\|revok\|not_support\|unsupport\|incompatible\|security_error\|knox\|warranty\|integ' 2>/dev/null | \
-            grep '<string' | head -30
+          find decompiled_full/res -name '*.xml' 2>/dev/null \
+            | xargs grep -hi 'unauthori\|tamper\|revok\|not_support\|knox\|warranty' 2>/dev/null \
+            | grep '<string' | head -30 || true
 
           echo "=== Error IDs from public.xml ==="
-          grep -i 'unauthori\|tamper\|modif\|revok\|not_support\|security_error\|knox\|warranty' \
+          grep -i 'unauthori\|tamper\|revok\|not_support\|knox\|warranty' \
             decompiled_full/res/values/public.xml 2>/dev/null | head -30 || echo "(no public.xml)"
 
           echo "=== Hardcoded error strings in smali ==="
-          grep -r 'const-string.*[Uu]nauthori\|const-string.*[Mm]odif\|const-string.*[Tt]amper\|const-string.*[Rr]evok' \
-            decompiled_full/smali*/ 2>/dev/null | head -20
-
-          echo "=== Main activity ==="
-          python3 -c "
-import xml.etree.ElementTree as ET
-try:
-    tree = ET.parse('decompiled_full/AndroidManifest.xml')
-    root = tree.getroot()
-    ns = 'http://schemas.android.com/apk/res/android'
-    for act in root.iter('activity'):
-        intents = [i for i in act if any(a.get(f'{{{ns}}}name','').endswith('MAIN') for a in i)]
-        if intents:
-            print('MAIN activity:', act.get(f'{{{ns}}}name',''))
-except Exception as e:
-    print('Error:', e)
-" 2>/dev/null
+          grep -r 'const-string.*[Uu]nauthori\|const-string.*[Mm]odif\|const-string.*[Tt]amper' \
+            decompiled_full/smali*/ 2>/dev/null | head -20 || true
 
       - name: Decompile smali only (for patching)
         run: |
@@ -72,7 +57,7 @@ except Exception as e:
           java -jar apktool.jar b decompiled -o wearable_unsigned.apk 2>&1 | tail -5
           echo "Repacked: $(du -sh wearable_unsigned.apk)"
 
-      - name: Align & sign
+      - name: Align and sign
         run: |
           APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -V | tail -1)
           ZIPALIGN=$(find $ANDROID_SDK_ROOT/build-tools -name zipalign   | sort -V | tail -1)
