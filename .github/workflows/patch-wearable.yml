@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'wearable.apk'
-  workflow_dispatch:  # можно запустить вручную из вкладки Actions
+  workflow_dispatch:
 
 jobs:
   patch:
@@ -20,45 +20,56 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download baksmali & smali
+      - name: Download apktool
         run: |
-          curl -L -o baksmali.jar \
-            https://github.com/JesusFreke/smali/releases/download/v2.5.2/baksmali-2.5.2.jar
-          curl -L -o smali.jar \
-            https://github.com/JesusFreke/smali/releases/download/v2.5.2/smali-2.5.2.jar
+          wget -q -O apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
 
-      - name: Unpack APK
+      - name: Decompile full (with resources for analysis)
         run: |
-          mkdir apk_out
-          unzip -q wearable.apk -d apk_out
-          echo "=== DEX files ==="
-          ls apk_out/*.dex 2>/dev/null || echo "No dex files found!"
+          java -jar apktool.jar d -f wearable.apk -o decompiled_full 2>&1 | tail -5
+          echo "Smali files: $(find decompiled_full/smali* -name '*.smali' 2>/dev/null | wc -l)"
 
-      - name: Decompile DEX to smali
+      - name: Find error strings in resources
         run: |
-          mkdir -p smali_src
-          for dex in apk_out/classes*.dex; do
-            [ -f "$dex" ] || continue
-            name=$(basename "$dex" .dex)
-            echo "Decompiling $name ..."
-            java -jar baksmali.jar d "$dex" -o "smali_src/$name"
-          done
+          echo "=== Matching string entries ==="
+          find decompiled_full/res -name '*.xml' 2>/dev/null | \
+            xargs grep -hi 'unauthori\|tamper\|modif.*os\|os.*modif\|revok\|not_support\|unsupport\|incompatible\|security_error\|knox\|warranty\|integ' 2>/dev/null | \
+            grep '<string' | head -30
+
+          echo "=== Error IDs from public.xml ==="
+          grep -i 'unauthori\|tamper\|modif\|revok\|not_support\|security_error\|knox\|warranty' \
+            decompiled_full/res/values/public.xml 2>/dev/null | head -30 || echo "(no public.xml)"
+
+          echo "=== Hardcoded error strings in smali ==="
+          grep -r 'const-string.*[Uu]nauthori\|const-string.*[Mm]odif\|const-string.*[Tt]amper\|const-string.*[Rr]evok' \
+            decompiled_full/smali*/ 2>/dev/null | head -20
+
+          echo "=== Main activity ==="
+          python3 -c "
+import xml.etree.ElementTree as ET
+try:
+    tree = ET.parse('decompiled_full/AndroidManifest.xml')
+    root = tree.getroot()
+    ns = 'http://schemas.android.com/apk/res/android'
+    for act in root.iter('activity'):
+        intents = [i for i in act if any(a.get(f'{{{ns}}}name','').endswith('MAIN') for a in i)]
+        if intents:
+            print('MAIN activity:', act.get(f'{{{ns}}}name',''))
+except Exception as e:
+    print('Error:', e)
+" 2>/dev/null
+
+      - name: Decompile smali only (for patching)
+        run: |
+          java -jar apktool.jar d --no-res -f wearable.apk -o decompiled 2>&1 | tail -3
 
       - name: Patch smali
-        run: python3 patch/patch_wearable.py smali_src/
+        run: python3 patch/patch_wearable.py decompiled/ decompiled_full/
 
-      - name: Recompile smali to DEX
+      - name: Recompile
         run: |
-          for dir in smali_src/classes*; do
-            [ -d "$dir" ] || continue
-            name=$(basename "$dir")
-            echo "Compiling $name ..."
-            java -jar smali.jar a "$dir" -o "apk_out/$name.dex"
-          done
-
-      - name: Repack APK
-        run: |
-          cd apk_out && zip -q -r ../wearable_unsigned.apk . && cd ..
+          java -jar apktool.jar b decompiled -o wearable_unsigned.apk 2>&1 | tail -5
           echo "Repacked: $(du -sh wearable_unsigned.apk)"
 
       - name: Align & sign
