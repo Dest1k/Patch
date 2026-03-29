@@ -24,26 +24,53 @@ jobs:
         run: |
           wget -q -O apktool.jar \
             https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
-          java -jar apktool.jar --version
 
-      - name: Analyse APK
+      - name: Decompile (with resources for analysis)
         run: |
-          echo "=== APK size ==="
-          du -sh wearable.apk
-          echo "=== Native .so files ==="
-          unzip -l wearable.apk | grep '\.so' | awk '{print $4}'
-          echo "=== DEX files ==="
-          unzip -l wearable.apk | grep '\.dex' | awk '{print $4}'
+          java -jar apktool.jar d -f wearable.apk -o decompiled_full
+          echo "=== Smali file count ==="
+          find decompiled_full/smali -name '*.smali' | wc -l
 
-      - name: Decompile smali only
+      - name: Find error strings in resources
+        run: |
+          echo "=== Searching strings for error keywords ==="
+          find decompiled_full/res -name '*.xml' 2>/dev/null | \
+            xargs grep -li 'unauthorized\|modified\|tamper\|not_support\|unsupport\|incompatible\|os_error\|security' 2>/dev/null | head -10
+
+          echo "=== Matching string entries ==="
+          find decompiled_full/res -name '*.xml' | \
+            xargs grep -i 'unauthorized\|without.*author\|modified.*os\|os.*modified\|tamper\|not supported\|security.*error\|galaxy.*only\|samsung.*only' 2>/dev/null | head -30
+
+          echo "=== Hardcoded error strings in smali ==="
+          grep -r 'const-string.*[Uu]nauthori\|const-string.*[Mm]odified\|const-string.*[Tt]amper\|const-string.*[Nn]ot.*[Ss]upport' \
+            decompiled_full/smali/ 2>/dev/null | head -20
+
+          echo "=== Classes with AlertDialog in setup/compat packages ==="
+          grep -rl 'AlertDialog\|showDialog\|DialogFragment' decompiled_full/smali/ | \
+            grep -i 'setup\|compat\|support\|check\|platform\|device\|phone\|main\|launch\|splash' | head -10
+
+          echo "=== Main activity from manifest ==="
+          python3 -c "
+import xml.etree.ElementTree as ET
+tree = ET.parse('decompiled_full/AndroidManifest.xml')
+root = tree.getroot()
+ns = 'http://schemas.android.com/apk/res/android'
+for app in root.iter('application'):
+    print('App name:', app.get(f'{{{ns}}}name',''))
+for act in root.iter('activity'):
+    intents = [i for i in act if any(a.get(f'{{{ns}}}name','').endswith('MAIN') for a in i)]
+    if intents:
+        print('MAIN activity:', act.get(f'{{{ns}}}name',''))
+    elif act.get(f'{{{ns}}}name','').lower().endswith('activity'):
+        print('Activity:', act.get(f'{{{ns}}}name',''))
+" 2>/dev/null | head -30
+
+      - name: Decompile smali only (for patching)
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled
-          echo "=== Main Activity ==="
-          grep -m1 'android.intent.action.MAIN' -A3 decompiled/AndroidManifest.xml || true
-          grep 'android:name.*Activity' decompiled/AndroidManifest.xml | head -5 || true
 
       - name: Patch smali
-        run: python3 patch/patch_wearable.py decompiled/
+        run: python3 patch/patch_wearable.py decompiled/ decompiled_full/
 
       - name: Recompile
         run: |

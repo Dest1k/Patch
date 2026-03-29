@@ -19,104 +19,69 @@ def get_registers(method):
 
 def to_true(m):  f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x1\n    return v0\n.end method"
 def to_false(m): f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x0\n    return v0\n.end method"
-def to_void(m):  f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    return-void\n.end method"
-def to_zero(m):  f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x0\n    return v0\n.end method"
-def to_null(m):  f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x0\n    return-object v0\n.end method"
 
 def find_methods(content, ret):
     return list(re.finditer(
         r'(\.method\s+[^\n]*\)' + re.escape(ret) + r'\n(?:(?!\.end method)[\s\S])*?\.end method)',
         content, re.MULTILINE))
 
-def is_constructor(method_first_line):
-    return '<init>' in method_first_line or '<clinit>' in method_first_line
+def is_constructor(first_line):
+    return '<init>' in first_line or '<clinit>' in first_line
 
 
-def stub_native_method(body):
-    """
-    Replace a 'native' method declaration with a stub that returns safe values.
-    native Z -> return true
-    native I -> return 0
-    native V -> return-void
-    native L... -> return null
-    """
-    first = body.split('\n')[0]
-    if 'native' not in first:
-        return body, False
-
-    # Determine return type
-    ret_match = re.search(r'\)([ZBSIJFDV]|L[^;]+;|\[.+)$', first.strip())
-    if not ret_match:
-        return body, False
-    ret = ret_match.group(1)
-
-    # Remove 'native' from the method declaration
-    new_first = re.sub(r'\bnative\b\s*', '', first)
-
-    regs = get_registers(body)  # will be 0 for native, use param count
-    # Count params for register allocation
-    sig_match = re.search(r'\(([^)]*)\)', first)
-    param_regs = 1  # at least 1 register
-    if sig_match:
-        s = sig_match.group(1)
-        i = 0
-        while i < len(s):
-            if s[i] == 'L': i = s.index(';', i) + 1; param_regs += 1
-            elif s[i] == '[': i += 1; continue
-            else: param_regs += 2 if s[i] in 'JD' else 1; i += 1
-    if 'static' not in first:
-        param_regs += 1
-    regs = max(param_regs + 1, 2)
-
-    if ret == 'Z':   body_stub = f"    .registers {regs}\n    const/4 v0, 0x1\n    return v0"
-    elif ret == 'V': body_stub = f"    .registers {regs}\n    return-void"
-    elif ret in ('I','S','B','C'): body_stub = f"    .registers {regs}\n    const/4 v0, 0x0\n    return v0"
-    elif ret in ('J',): body_stub = f"    .registers {regs}\n    const-wide/16 v0, 0x0\n    return-wide v0"
-    elif ret in ('F',): body_stub = f"    .registers {regs}\n    const/4 v0, 0x0\n    return v0"
-    elif ret in ('D',): body_stub = f"    .registers {regs}\n    const-wide/16 v0, 0x0\n    return-wide v0"
-    else:             body_stub = f"    .registers {regs}\n    const/4 v0, 0x0\n    return-object v0"
-
-    new_body = f"{new_first}\n{body_stub}\n.end method"
-    return new_body, True
+def find_error_string_ids(full_dir):
+    """Search decoded resources for error-related string resource IDs."""
+    ids = set()
+    keywords = re.compile(
+        r'unauthorized|without.*author|os.*modif|modif.*os|tamper|'
+        r'not_support|unsupport|incompatible|os_error|security_error|'
+        r'gear_not|phone_not|device_not|knox|warranty',
+        re.IGNORECASE)
+    if not full_dir:
+        return ids
+    for root, _, files in os.walk(os.path.join(full_dir, 'res')):
+        for fn in files:
+            if not fn.endswith('.xml'): continue
+            fp = os.path.join(root, fn)
+            try:
+                content = open(fp, encoding='utf-8', errors='ignore').read()
+                for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]*)</string>', content):
+                    name, val = m.group(1), m.group(2)
+                    if keywords.search(name) or keywords.search(val):
+                        ids.add(name)
+                        print(f'  [STRFOUND] name={name!r} val={val[:80]!r}')
+            except Exception:
+                pass
+    return ids
 
 
-def patch_file(fp, stats):
+def patch_file(fp, stats, error_str_names):
     with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
         orig = f.read()
     out = orig
     count = 0
     fname = os.path.basename(fp)
 
-    # S9 (highest priority): stub ALL native methods in files that load DiagMonKey
-    # or that declare native methods (covers the JNI bridge class)
-    if 'DiagMonKey' in orig or ('native' in orig and any(
-            kw in fp for kw in ['DiagMon','diagmon','NativeLib','JniLib','SecurityNative'])):
-        all_methods = re.finditer(
-            r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)',
-            out, re.MULTILINE)
-        for m in all_methods:
+    # S9: stub DiagMonKey native methods
+    if 'DiagMonKey' in orig:
+        for m in re.finditer(r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)', out, re.MULTILINE):
             b = m.group(0)
-            if 'native' in b.split('\n')[0]:
-                new_b, changed = stub_native_method(b)
-                if changed:
-                    out = out.replace(b, new_b, 1); count += 1; stats['s9'] += 1
-                    print(f'  [S9-DiagMonKey-native] {fname} :: {b.split(chr(10))[0].strip()}')
-
-    # Also stub any native method whose name hints at key/auth/verify checking
-    KEY_NATIVE_HINTS = ['key','auth','verify','check','valid','sign','cert','integrity','license']
-    all_methods = re.finditer(
-        r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)',
-        out, re.MULTILINE)
-    for m in all_methods:
-        b = m.group(0)
-        first = b.split('\n')[0]
-        if 'native' not in first: continue
-        method_name = re.search(r'\s(\w+)\(', first)
-        if method_name and any(h in method_name.group(1).lower() for h in KEY_NATIVE_HINTS):
-            new_b, changed = stub_native_method(b)
-            if changed:
+            first = b.split('\n')[0]
+            if 'native' not in first: continue
+            ret = re.search(r'\)([ZBSIJFDV]|L[^;]+;)', first.strip())
+            if not ret: continue
+            rt = ret.group(1)
+            new_first = re.sub(r'\bnative\b\s*', '', first)
+            r = get_registers(b); r = max(r, 2)
+            if rt == 'Z':   stub = f"    .registers {r}\n    const/4 v0, 0x1\n    return v0"
+            elif rt == 'V': stub = f"    .registers {r}\n    return-void"
+            elif rt in 'ISBCF': stub = f"    .registers {r}\n    const/4 v0, 0x0\n    return v0"
+            elif rt in 'JD':    stub = f"    .registers {r}\n    const-wide/16 v0, 0x0\n    return-wide v0"
+            else:               stub = f"    .registers {r}\n    const/4 v0, 0x0\n    return-object v0"
+            new_b = f"{new_first}\n{stub}\n.end method"
+            if b != new_b:
                 out = out.replace(b, new_b, 1); count += 1; stats['s9'] += 1
-                print(f'  [S9-NativeHint] {fname} :: {first.strip()}')
+                print(f'  [S9] {fname} :: {first.strip()}')
 
     # S1
     for m in find_methods(orig, 'Z'):
@@ -166,7 +131,7 @@ def patch_file(fp, stats):
             if b != r: out = out.replace(b,r,1); count+=1; stats['s6']+=1
             print(f'  [S6-Build] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S8: all non-constructor boolean methods in CertificateChecker
+    # S8
     if 'certificatechecker' in fname.lower():
         for m in find_methods(out, 'Z'):
             b = m.group(0)
@@ -175,6 +140,22 @@ def patch_file(fp, stats):
             if b != r: out = out.replace(b,r,1); count+=1; stats['s8']+=1
             print(f'  [S8-Cert] {fname} :: {b.split(chr(10))[0].strip()}')
 
+    # S10: patch methods that reference error string resource names found in res/
+    if error_str_names:
+        for m in find_methods(out, 'V'):
+            b = m.group(0)
+            if is_constructor(b.split('\n')[0]): continue
+            for name in error_str_names:
+                if name in b:
+                    # Make the void method return immediately
+                    regs = get_registers(b)
+                    first = b.split('\n')[0]
+                    new_b = f"{first}\n    .registers {regs}\n    return-void\n.end method"
+                    if b != new_b:
+                        out = out.replace(b, new_b, 1); count += 1; stats['s10'] += 1
+                        print(f'  [S10-ErrStr:{name}] {fname} :: {first.strip()}')
+                    break
+
     if out != orig:
         with open(fp, 'w', encoding='utf-8') as f:
             f.write(out)
@@ -182,20 +163,29 @@ def patch_file(fp, stats):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print('Usage: patch_wearable.py <smali_root>'); sys.exit(1)
+    if len(sys.argv) < 2:
+        print('Usage: patch_wearable.py <smali_root> [full_decode_dir]'); sys.exit(1)
     base = sys.argv[1]
-    stats = {f's{i}':0 for i in range(1,10)}
+    full_dir = sys.argv[2] if len(sys.argv) > 2 else None
+
+    stats = {f's{i}':0 for i in range(1,11)}
     total_files = total_patches = 0
+
+    print('=== Searching for error strings in resources ===')
+    error_str_names = find_error_string_ids(full_dir)
+    print(f'Error string names found: {error_str_names}')
+
     subdirs = [d for d in ['smali','smali_classes2','smali_classes3','smali_classes4','smali_classes5']
                if os.path.isdir(os.path.join(base, d))]
-    print(f'Smali dirs: {subdirs}')
+    print(f'\nSmali dirs: {subdirs}')
+
     for sub in subdirs:
         for dp,_,files in os.walk(os.path.join(base,sub)):
             for fn in files:
                 if fn.endswith('.smali'):
                     total_files += 1
-                    total_patches += patch_file(os.path.join(dp,fn), stats)
+                    total_patches += patch_file(os.path.join(dp,fn), stats, error_str_names)
+
     print(f'\n=== Summary ===')
     print(f'Files   : {total_files}')
     print(f'Patches : {total_patches}')
