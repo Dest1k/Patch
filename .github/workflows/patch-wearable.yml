@@ -26,20 +26,21 @@ jobs:
             https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
           java -jar apktool.jar --version
 
-      - name: Analyse APK contents
+      - name: Analyse APK
         run: |
           echo "=== APK size ==="
           du -sh wearable.apk
-          echo "=== DEX + SO files ==="
-          unzip -l wearable.apk | grep -E '\.dex|\.so' | head -40
+          echo "=== Native .so files ==="
+          unzip -l wearable.apk | grep '\.so' | awk '{print $4}'
+          echo "=== DEX files ==="
+          unzip -l wearable.apk | grep '\.dex' | awk '{print $4}'
 
-      - name: Decompile smali only (skip resources)
+      - name: Decompile smali only
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled
-          echo "=== Smali dirs ==="
-          ls decompiled/ | grep smali
-          echo "=== Smali file count ==="
-          find decompiled/ -name '*.smali' | wc -l
+          echo "=== Main Activity ==="
+          grep -m1 'android.intent.action.MAIN' -A3 decompiled/AndroidManifest.xml || true
+          grep 'android:name.*Activity' decompiled/AndroidManifest.xml | head -5 || true
 
       - name: Patch smali
         run: python3 patch/patch_wearable.py decompiled/
