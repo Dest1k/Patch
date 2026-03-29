@@ -20,47 +20,24 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download baksmali & smali
+      - name: Download apktool
         run: |
-          curl -fL -o baksmali.jar \
-            https://repo1.maven.org/maven2/org/smali/baksmali/2.5.2/baksmali-2.5.2-uber.jar
-          curl -fL -o smali.jar \
-            https://repo1.maven.org/maven2/org/smali/smali/2.5.2/smali-2.5.2-uber.jar
-          java -jar baksmali.jar --version
-          java -jar smali.jar --version
+          curl -fL -o apktool.jar \
+            https://repo1.maven.org/maven2/org/apktool/apktool/2.9.3/apktool-2.9.3.jar
+          java -jar apktool.jar --version
 
-      - name: Unpack APK
+      - name: Decompile smali only (skip resources)
         run: |
-          mkdir apk_out
-          unzip -q wearable.apk -d apk_out
-          echo "=== DEX files ==="
-          ls apk_out/*.dex 2>/dev/null || echo "No dex files!"
-
-      - name: Decompile DEX to smali
-        run: |
-          mkdir -p smali_src
-          for dex in apk_out/classes*.dex; do
-            [ -f "$dex" ] || continue
-            name=$(basename "$dex" .dex)
-            echo "Decompiling $name ..."
-            java -jar baksmali.jar d "$dex" -o "smali_src/$name"
-          done
+          java -jar apktool.jar d --no-res -f wearable.apk -o decompiled
+          echo "Smali dirs:"
+          ls decompiled/ | grep smali
 
       - name: Patch smali
-        run: python3 patch/patch_wearable.py smali_src/
+        run: python3 patch/patch_wearable.py decompiled/
 
-      - name: Recompile smali to DEX
+      - name: Recompile (resources not touched)
         run: |
-          for dir in smali_src/classes*; do
-            [ -d "$dir" ] || continue
-            name=$(basename "$dir")
-            echo "Compiling $name ..."
-            java -jar smali.jar a "$dir" -o "apk_out/$name.dex"
-          done
-
-      - name: Repack APK
-        run: |
-          cd apk_out && zip -q -r ../wearable_unsigned.apk . && cd ..
+          java -jar apktool.jar b decompiled -o wearable_unsigned.apk
           echo "Repacked: $(du -sh wearable_unsigned.apk)"
 
       - name: Align & sign
