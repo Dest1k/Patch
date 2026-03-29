@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'wearable.apk'
-  workflow_dispatch:  # можно запустить вручную из вкладки Actions
+  workflow_dispatch:
 
 jobs:
   patch:
@@ -20,12 +20,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download baksmali & smali
+      - name: Download baksmali & smali (Maven Central)
         run: |
-          curl -L -o baksmali.jar \
-            https://github.com/JesusFreke/smali/releases/download/v2.5.2/baksmali-2.5.2.jar
-          curl -L -o smali.jar \
-            https://github.com/JesusFreke/smali/releases/download/v2.5.2/smali-2.5.2.jar
+          curl -fL -o baksmali.jar \
+            https://repo1.maven.org/maven2/org/smali/baksmali/2.5.2/baksmali-2.5.2.jar
+          curl -fL -o smali.jar \
+            https://repo1.maven.org/maven2/org/smali/smali/2.5.2/smali-2.5.2.jar
+          java -jar baksmali.jar --version
+          java -jar smali.jar --version
 
       - name: Unpack APK
         run: |
