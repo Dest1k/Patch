@@ -22,20 +22,19 @@ jobs:
 
       - name: Download apktool
         run: |
-          curl -fL -o apktool.jar \
-            https://repo1.maven.org/maven2/org/apktool/apktool/2.9.3/apktool-2.9.3.jar
+          wget -q -O apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
           java -jar apktool.jar --version
 
       - name: Decompile smali only (skip resources)
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled
-          echo "Smali dirs:"
           ls decompiled/ | grep smali
 
       - name: Patch smali
         run: python3 patch/patch_wearable.py decompiled/
 
-      - name: Recompile (resources not touched)
+      - name: Recompile
         run: |
           java -jar apktool.jar b decompiled -o wearable_unsigned.apk
           echo "Repacked: $(du -sh wearable_unsigned.apk)"
