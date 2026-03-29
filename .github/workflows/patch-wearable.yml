@@ -1,22 +1,17 @@
 name: Patch Samsung Wearable APK
 
-# Запуск вручную: Actions -> Patch Samsung Wearable APK -> Run workflow
-# В поле apk_url вставь прямую ссылку на скачивание APK.
-#
-# Как получить ссылку:
-#   1. Вытащи APK с телефона через ADB:
-#        adb shell pm path com.samsung.android.app.watchmanager
-#        adb pull <путь из предыдущей команды> wearable.apk
-#   2. Загрузи файл на https://file.io  (даст прямую ссылку)
-#   3. Вставь ссылку сюда
+# Как пользоваться:
+#   1. Зайди в репозиторий
+#   2. Нажми "Add file" -> "Upload files"
+#   3. Перетащи сюда wearable.apk
+#   4. Нажми Commit changes
+#   5. Actions запустится автоматически
+#   6. Скачай готовый APK из Artifacts
 
 on:
-  workflow_dispatch:
-    inputs:
-      apk_url:
-        description: 'Прямая ссылка на Samsung Wearable APK (file.io / dropbox ?dl=1 / etc.)'
-        required: true
-        type: string
+  push:
+    paths:
+      - 'wearable.apk'
 
 jobs:
   patch:
@@ -32,39 +27,29 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download APK
-        run: |
-          curl -L -o wearable.apk "${{ github.event.inputs.apk_url }}"
-          echo "APK size: $(du -sh wearable.apk)"
-
       - name: Download apktool
         run: |
           curl -L -o apktool.jar \
             https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
 
       - name: Decompile APK
-        run: |
-          java -jar apktool.jar d wearable.apk -o decompiled -f
+        run: java -jar apktool.jar d wearable.apk -o decompiled -f
 
       - name: Patch smali
-        run: |
-          python3 patch/patch_wearable.py decompiled/
+        run: python3 patch/patch_wearable.py decompiled/
 
       - name: Recompile APK
         run: |
           java -jar apktool.jar b decompiled -o wearable_unsigned.apk -f --use-aapt2 \
             || java -jar apktool.jar b decompiled -o wearable_unsigned.apk -f
 
-      - name: Generate keystore
+      - name: Generate keystore & sign
         run: |
           keytool -genkey -v \
             -keystore patch.keystore -alias patch \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Patch,OU=Patch,O=Patch,L=X,ST=X,C=US" \
             -storepass patchpass -keypass patchpass -noprompt
-
-      - name: Sign APK
-        run: |
           APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -V | tail -1)
           $APKSIGNER sign \
             --ks patch.keystore --ks-pass pass:patchpass --key-pass pass:patchpass \
