@@ -36,15 +36,17 @@ def is_constructor(first_line):
 
 def get_error_resource_ids(full_dir):
     """Parse public.xml to get hex resource IDs for error-related strings."""
-    id_to_name = {}  # hex_id (lowercase, no leading zeros) -> name
+    id_to_name = {}
     if not full_dir:
         return id_to_name
 
-    keywords = re.compile(
+    # Match string NAMES in public.xml
+    name_keywords = re.compile(
         r'unauthori|without.*author|os.*modif|modif.*os|tamper|'
         r'not_support|unsupport|incompatible|os_error|security_error|'
         r'gear_not|phone_not|device_not|knox|warranty|not_allow|blocked|'
-        r'modify|changed|invalid_device|wrong_device|revok|illegal|integ',
+        r'modify|changed|invalid_device|wrong_device|revok|illegal|integ|'
+        r'custom_binary|custombinary|binary_error|custom_os|phone_os',
         re.IGNORECASE)
 
     public_xml = os.path.join(full_dir, 'res', 'values', 'public.xml')
@@ -54,28 +56,12 @@ def get_error_resource_ids(full_dir):
                 r'<public\s+type="string"\s+name="([^"]+)"\s+id="(0x[0-9a-fA-F]+)"',
                 content):
             name, rid = m.group(1), m.group(2)
-            if keywords.search(name):
-                # Store as int then back to consistent hex for matching
+            if name_keywords.search(name):
                 hex_val = hex(int(rid, 16))
                 id_to_name[hex_val] = name
                 print(f'  [RESID] {name} -> {hex_val}')
     else:
         print(f'  [WARN] public.xml not found at {public_xml}')
-
-    # Also scan strings.xml for matching values to print diagnostics
-    for root, _, files in os.walk(os.path.join(full_dir, 'res')):
-        for fn in files:
-            if fn not in ('strings.xml', 'string.xml'): continue
-            fp = os.path.join(root, fn)
-            try:
-                content = open(fp, encoding='utf-8', errors='ignore').read()
-                for m in re.finditer(
-                        r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', content):
-                    name, val = m.group(1), m.group(2)
-                    if keywords.search(val) or keywords.search(name):
-                        print(f'  [STRVAL] name={name!r} val={val[:100]!r}')
-            except Exception:
-                pass
 
     print(f'Total error resource IDs found: {len(id_to_name)}')
     return id_to_name
@@ -148,7 +134,7 @@ def patch_file(fp, stats, error_res_ids):
             if b != r: out = out.replace(b, r, 1); count += 1; stats['s4'] += 1
             print(f'  [S4-Knox] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S5: signature/package verification — broadened
+    # S5: signature/package verification
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if is_constructor(b.split('\n')[0]): continue
@@ -173,10 +159,15 @@ def patch_file(fp, stats, error_res_ids):
             if b != r: out = out.replace(b, r, 1); count += 1; stats['s6'] += 1
             print(f'  [S6-Build] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S8: all boolean methods in security-related classes (by filename)
-    if re.search(r'certificate|checker|revok|secur.*check|check.*secur|'
-                 r'integrity|verif|validat|authent|trustmanager|pinning|'
-                 r'tamper|packagesign', fname_lower):
+    # S8: boolean methods in SPECIFIC security-related classes only
+    # Deliberately narrow to avoid breaking UI/navigation checker classes
+    is_security_class = bool(re.search(
+        r'certificatechecker|certificaterevok|'
+        r'sakverif|gakverif|verificationmanager|'
+        r'(^|[^a-z])verifier($|[^a-z])|verifierinterface|'
+        r'packagesign|signatureverif|trustmanager|certpinning|certificatepinn',
+        fname_lower))
+    if is_security_class:
         for m in find_methods(out, 'Z'):
             b = m.group(0)
             if is_constructor(b.split('\n')[0]): continue
@@ -184,16 +175,14 @@ def patch_file(fp, stats, error_res_ids):
             if b != r: out = out.replace(b, r, 1); count += 1; stats['s8'] += 1
             print(f'  [S8-SecClass] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S11: CertificateRevocationStatus — make all non-constructor methods benign
+    # S11: CertificateRevocationStatus
     if re.search(r'revok|revocation', fname_lower):
-        # Boolean methods → true (valid / not revoked)
         for m in find_methods(out, 'Z'):
             b = m.group(0)
             if is_constructor(b.split('\n')[0]): continue
             r = to_true(b)
             if b != r: out = out.replace(b, r, 1); count += 1; stats['s11'] += 1
             print(f'  [S11-Revoc] {fname} :: {b.split(chr(10))[0].strip()}')
-        # Void methods that throw → return-void
         for m in find_methods(out, 'V'):
             b = m.group(0)
             if is_constructor(b.split('\n')[0]): continue
@@ -204,6 +193,32 @@ def patch_file(fp, stats, error_res_ids):
                 if b != new_b:
                     out = out.replace(b, new_b, 1); count += 1; stats['s11'] += 1
                     print(f'  [S11-RevocVoid] {fname} :: {first.strip()}')
+
+    # S12: Knox custom binary / warranty check
+    # Patch boolean methods that check custom binary status -> return false (not modified)
+    # Patch void methods that reference Knox custom binary -> return-void (skip error)
+    for m in find_methods(out, 'Z'):
+        b = m.group(0)
+        if is_constructor(b.split('\n')[0]): continue
+        if ('warranty_bit' in b or 'custom_binary' in b.lower()
+                or 'getCustomBinaryStatus' in b
+                or 'getWarrantyStatus' in b
+                or 'isCustomKernel' in b
+                or 'KnoxCustomManager' in b):
+            r = to_false(b)  # false = NOT custom binary = phone is clean
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s12'] += 1
+            print(f'  [S12-CustomBin] {fname} :: {b.split(chr(10))[0].strip()}')
+    for m in find_methods(out, 'V'):
+        b = m.group(0)
+        if is_constructor(b.split('\n')[0]): continue
+        if ('warranty_bit' in b or 'getCustomBinaryStatus' in b
+                or 'getWarrantyStatus' in b or 'KnoxCustomManager' in b):
+            regs = get_registers(b)
+            first = b.split('\n')[0]
+            new_b = f"{first}\n    .registers {regs}\n    return-void\n.end method"
+            if b != new_b:
+                out = out.replace(b, new_b, 1); count += 1; stats['s12'] += 1
+                print(f'  [S12-CustomBinVoid] {fname} :: {first.strip()}')
 
     # S10: patch methods referencing error string resource IDs
     if error_res_ids:
@@ -216,14 +231,10 @@ def patch_file(fp, stats, error_res_ids):
             if is_constructor(first): continue
             matched_name = None
             for rid, rname in error_res_ids.items():
-                # smali: const vX, 0x7f0a0123  or  const/high16 vX, 0x7f0a
-                # rid from hex() is like '0x7f0a0123'
-                rid_pattern = re.escape(rid)
-                if re.search(r'const[^\n]*' + rid_pattern, b, re.IGNORECASE):
+                if re.search(r'const[^\n]*' + re.escape(rid), b, re.IGNORECASE):
                     matched_name = rname
                     break
             if not matched_name: continue
-            # Determine return type
             ret_match = re.search(r'\)([ZBSIJFDV]|L[^;]+;)\s*$', first.strip())
             if not ret_match: continue
             rt = ret_match.group(1)
@@ -250,7 +261,7 @@ if __name__ == '__main__':
     base = sys.argv[1]
     full_dir = sys.argv[2] if len(sys.argv) > 2 else None
 
-    stats = {f's{i}': 0 for i in range(1, 12)}
+    stats = {f's{i}': 0 for i in range(1, 13)}
     total_files = total_patches = 0
 
     print('=== Searching for error resource IDs ===')
