@@ -20,12 +20,12 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download baksmali & smali (Maven Central)
+      - name: Download baksmali & smali
         run: |
           curl -fL -o baksmali.jar \
-            https://repo1.maven.org/maven2/org/smali/baksmali/2.5.2/baksmali-2.5.2.jar
+            https://repo1.maven.org/maven2/org/smali/baksmali/2.5.2/baksmali-2.5.2-uber.jar
           curl -fL -o smali.jar \
-            https://repo1.maven.org/maven2/org/smali/smali/2.5.2/smali-2.5.2.jar
+            https://repo1.maven.org/maven2/org/smali/smali/2.5.2/smali-2.5.2-uber.jar
           java -jar baksmali.jar --version
           java -jar smali.jar --version
 
@@ -34,7 +34,7 @@ jobs:
           mkdir apk_out
           unzip -q wearable.apk -d apk_out
           echo "=== DEX files ==="
-          ls apk_out/*.dex 2>/dev/null || echo "No dex files found!"
+          ls apk_out/*.dex 2>/dev/null || echo "No dex files!"
 
       - name: Decompile DEX to smali
         run: |
