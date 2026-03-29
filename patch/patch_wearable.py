@@ -17,8 +17,13 @@ def get_registers(method):
         return max(int(m.group(1)) + params + (0 if 'static' in method.split('\n')[0] else 1), 1)
     return 2
 
-def to_true(m):  f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x1\n    return v0\n.end method"
-def to_false(m): f=m.split('\n')[0]; return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x0\n    return v0\n.end method"
+def to_true(m):
+    f = m.split('\n')[0]
+    return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x1\n    return v0\n.end method"
+
+def to_false(m):
+    f = m.split('\n')[0]
+    return f"{f}\n    .registers {get_registers(m)}\n    const/4 v0, 0x0\n    return v0\n.end method"
 
 def find_methods(content, ret):
     return list(re.finditer(
@@ -29,42 +34,66 @@ def is_constructor(first_line):
     return '<init>' in first_line or '<clinit>' in first_line
 
 
-def find_error_string_ids(full_dir):
-    """Search decoded resources for error-related string resource IDs."""
-    ids = set()
-    keywords = re.compile(
-        r'unauthorized|without.*author|os.*modif|modif.*os|tamper|'
-        r'not_support|unsupport|incompatible|os_error|security_error|'
-        r'gear_not|phone_not|device_not|knox|warranty',
-        re.IGNORECASE)
+def get_error_resource_ids(full_dir):
+    """Parse public.xml to get hex resource IDs for error-related strings."""
+    id_to_name = {}  # hex_id (lowercase, no leading zeros) -> name
     if not full_dir:
-        return ids
+        return id_to_name
+
+    keywords = re.compile(
+        r'unauthori|without.*author|os.*modif|modif.*os|tamper|'
+        r'not_support|unsupport|incompatible|os_error|security_error|'
+        r'gear_not|phone_not|device_not|knox|warranty|not_allow|blocked|'
+        r'modify|changed|invalid_device|wrong_device|revok|illegal|integ',
+        re.IGNORECASE)
+
+    public_xml = os.path.join(full_dir, 'res', 'values', 'public.xml')
+    if os.path.exists(public_xml):
+        content = open(public_xml, encoding='utf-8', errors='ignore').read()
+        for m in re.finditer(
+                r'<public\s+type="string"\s+name="([^"]+)"\s+id="(0x[0-9a-fA-F]+)"',
+                content):
+            name, rid = m.group(1), m.group(2)
+            if keywords.search(name):
+                # Store as int then back to consistent hex for matching
+                hex_val = hex(int(rid, 16))
+                id_to_name[hex_val] = name
+                print(f'  [RESID] {name} -> {hex_val}')
+    else:
+        print(f'  [WARN] public.xml not found at {public_xml}')
+
+    # Also scan strings.xml for matching values to print diagnostics
     for root, _, files in os.walk(os.path.join(full_dir, 'res')):
         for fn in files:
-            if not fn.endswith('.xml'): continue
+            if fn not in ('strings.xml', 'string.xml'): continue
             fp = os.path.join(root, fn)
             try:
                 content = open(fp, encoding='utf-8', errors='ignore').read()
-                for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]*)</string>', content):
+                for m in re.finditer(
+                        r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', content):
                     name, val = m.group(1), m.group(2)
-                    if keywords.search(name) or keywords.search(val):
-                        ids.add(name)
-                        print(f'  [STRFOUND] name={name!r} val={val[:80]!r}')
+                    if keywords.search(val) or keywords.search(name):
+                        print(f'  [STRVAL] name={name!r} val={val[:100]!r}')
             except Exception:
                 pass
-    return ids
+
+    print(f'Total error resource IDs found: {len(id_to_name)}')
+    return id_to_name
 
 
-def patch_file(fp, stats, error_str_names):
+def patch_file(fp, stats, error_res_ids):
     with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
         orig = f.read()
     out = orig
     count = 0
     fname = os.path.basename(fp)
+    fname_lower = fname.lower()
 
     # S9: stub DiagMonKey native methods
     if 'DiagMonKey' in orig:
-        for m in re.finditer(r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)', out, re.MULTILINE):
+        for m in re.finditer(
+                r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)',
+                out, re.MULTILINE):
             b = m.group(0)
             first = b.split('\n')[0]
             if 'native' not in first: continue
@@ -72,7 +101,7 @@ def patch_file(fp, stats, error_str_names):
             if not ret: continue
             rt = ret.group(1)
             new_first = re.sub(r'\bnative\b\s*', '', first)
-            r = get_registers(b); r = max(r, 2)
+            r = max(get_registers(b), 2)
             if rt == 'Z':   stub = f"    .registers {r}\n    const/4 v0, 0x1\n    return v0"
             elif rt == 'V': stub = f"    .registers {r}\n    return-void"
             elif rt in 'ISBCF': stub = f"    .registers {r}\n    const/4 v0, 0x0\n    return v0"
@@ -83,78 +112,131 @@ def patch_file(fp, stats, error_str_names):
                 out = out.replace(b, new_b, 1); count += 1; stats['s9'] += 1
                 print(f'  [S9] {fname} :: {first.strip()}')
 
-    # S1
+    # S1: Build.MANUFACTURER == "samsung" checks
     for m in find_methods(orig, 'Z'):
         b = m.group(0)
         if 'Landroid/os/Build;->MANUFACTURER' in b and 'samsung' in b.lower():
             r = to_true(b)
-            if b != r: out = out.replace(b,r,1); count+=1; stats['s1']+=1
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s1'] += 1
             print(f'  [S1] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S2
-    for name in ['isSamsungDevice','isSamsungPhone','isSupportedPhone','isCompatiblePhone',
-                 'isSupportedDevice','checkCompatibility','isPhoneSupported','isAllowedDevice',
-                 'isSupportedModel','isTargetDevice','checkDeviceSupport']:
-        for m in re.finditer(r'(\.method\s+[^\n]*'+re.escape(name)+r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)', out, re.MULTILINE):
+    # S2: device compatibility check methods by name
+    for name in ['isSamsungDevice', 'isSamsungPhone', 'isSupportedPhone', 'isCompatiblePhone',
+                 'isSupportedDevice', 'checkCompatibility', 'isPhoneSupported', 'isAllowedDevice',
+                 'isSupportedModel', 'isTargetDevice', 'checkDeviceSupport', 'isSamsungGalaxy',
+                 'isGalaxyDevice', 'isSamsungProduct', 'checkPhoneCompatibility']:
+        for m in re.finditer(
+                r'(\.method\s+[^\n]*' + re.escape(name) + r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)',
+                out, re.MULTILINE):
             b = m.group(0); r = to_true(b)
-            if b != r: out = out.replace(b,r,1); count+=1; stats['s2']+=1
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s2'] += 1
             print(f'  [S2:{name}] {fname}')
 
-    # S3
-    for m in re.finditer(r'(\.method\s+[^\n]*isDeviceRooted[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)', out, re.MULTILINE):
+    # S3: root/bootloader detection
+    for m in re.finditer(
+            r'(\.method\s+[^\n]*(?:isDeviceRooted|isRooted|isBootloaderUnlocked|checkRoot)[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)',
+            out, re.MULTILINE):
         b = m.group(0); r = to_false(b)
-        if b != r: out = out.replace(b,r,1); count+=1; stats['s3']+=1
+        if b != r: out = out.replace(b, r, 1); count += 1; stats['s3'] += 1
+        print(f'  [S3-Root] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S4
+    # S4: Knox boolean methods
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if 'Lcom/samsung/android/knox/' in b:
             r = to_true(b)
-            if b != r: out = out.replace(b,r,1); count+=1; stats['s4']+=1
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s4'] += 1
+            print(f'  [S4-Knox] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S5
-    for m in find_methods(out, 'Z'):
-        b = m.group(0)
-        if ('PackageInfo;->signatures' in b or 'PackageInfo;->signingInfo' in b
-                or ('getPackageInfo' in b and '0x40' in b)):
-            r = to_true(b)
-            if b != r: out = out.replace(b,r,1); count+=1; stats['s5']+=1
-            print(f'  [S5-Sig] {fname} :: {b.split(chr(10))[0].strip()}')
-
-    # S6
+    # S5: signature/package verification — broadened
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if is_constructor(b.split('\n')[0]): continue
-        if any(f in b for f in ['Landroid/os/Build;->FINGERPRINT','Landroid/os/Build;->TAGS',
-                                 'Landroid/os/Build;->TYPE','release-keys']):
+        sig_check = (
+            'PackageInfo;->signatures' in b
+            or 'PackageInfo;->signingInfo' in b
+            or ('getPackageInfo' in b and ('signatures' in b.lower() or '0x40' in b or '0x44' in b or '0x4000000' in b))
+            or ('Signature' in b and ('digest' in b.lower() or 'hash' in b.lower() or 'match' in b.lower() or 'equal' in b.lower() or 'verify' in b.lower()))
+        )
+        if sig_check:
             r = to_true(b)
-            if b != r: out = out.replace(b,r,1); count+=1; stats['s6']+=1
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s5'] += 1
+            print(f'  [S5-Sig] {fname} :: {b.split(chr(10))[0].strip()}')
+
+    # S6: Build integrity fields in boolean methods
+    for m in find_methods(out, 'Z'):
+        b = m.group(0)
+        if is_constructor(b.split('\n')[0]): continue
+        if any(f in b for f in ['Landroid/os/Build;->FINGERPRINT', 'Landroid/os/Build;->TAGS',
+                                 'Landroid/os/Build;->TYPE', 'release-keys']):
+            r = to_true(b)
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s6'] += 1
             print(f'  [S6-Build] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S8
-    if 'certificatechecker' in fname.lower():
+    # S8: all boolean methods in security-related classes (by filename)
+    if re.search(r'certificate|checker|revok|secur.*check|check.*secur|'
+                 r'integrity|verif|validat|authent|trustmanager|pinning|'
+                 r'tamper|packagesign', fname_lower):
         for m in find_methods(out, 'Z'):
             b = m.group(0)
             if is_constructor(b.split('\n')[0]): continue
             r = to_true(b)
-            if b != r: out = out.replace(b,r,1); count+=1; stats['s8']+=1
-            print(f'  [S8-Cert] {fname} :: {b.split(chr(10))[0].strip()}')
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s8'] += 1
+            print(f'  [S8-SecClass] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S10: patch methods that reference error string resource names found in res/
-    if error_str_names:
+    # S11: CertificateRevocationStatus — make all non-constructor methods benign
+    if re.search(r'revok|revocation', fname_lower):
+        # Boolean methods → true (valid / not revoked)
+        for m in find_methods(out, 'Z'):
+            b = m.group(0)
+            if is_constructor(b.split('\n')[0]): continue
+            r = to_true(b)
+            if b != r: out = out.replace(b, r, 1); count += 1; stats['s11'] += 1
+            print(f'  [S11-Revoc] {fname} :: {b.split(chr(10))[0].strip()}')
+        # Void methods that throw → return-void
         for m in find_methods(out, 'V'):
             b = m.group(0)
             if is_constructor(b.split('\n')[0]): continue
-            for name in error_str_names:
-                if name in b:
-                    # Make the void method return immediately
-                    regs = get_registers(b)
-                    first = b.split('\n')[0]
-                    new_b = f"{first}\n    .registers {regs}\n    return-void\n.end method"
-                    if b != new_b:
-                        out = out.replace(b, new_b, 1); count += 1; stats['s10'] += 1
-                        print(f'  [S10-ErrStr:{name}] {fname} :: {first.strip()}')
+            if 'throw' in b or 'Exception' in b:
+                regs = get_registers(b)
+                first = b.split('\n')[0]
+                new_b = f"{first}\n    .registers {regs}\n    return-void\n.end method"
+                if b != new_b:
+                    out = out.replace(b, new_b, 1); count += 1; stats['s11'] += 1
+                    print(f'  [S11-RevocVoid] {fname} :: {first.strip()}')
+
+    # S10: patch methods referencing error string resource IDs
+    if error_res_ids:
+        all_methods = list(re.finditer(
+            r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)',
+            out, re.MULTILINE))
+        for m in all_methods:
+            b = m.group(0)
+            first = b.split('\n')[0]
+            if is_constructor(first): continue
+            matched_name = None
+            for rid, rname in error_res_ids.items():
+                # smali: const vX, 0x7f0a0123  or  const/high16 vX, 0x7f0a
+                # rid from hex() is like '0x7f0a0123'
+                rid_pattern = re.escape(rid)
+                if re.search(r'const[^\n]*' + rid_pattern, b, re.IGNORECASE):
+                    matched_name = rname
                     break
+            if not matched_name: continue
+            # Determine return type
+            ret_match = re.search(r'\)([ZBSIJFDV]|L[^;]+;)\s*$', first.strip())
+            if not ret_match: continue
+            rt = ret_match.group(1)
+            regs = get_registers(b)
+            if rt == 'V':
+                new_b = f"{first}\n    .registers {regs}\n    return-void\n.end method"
+            elif rt == 'Z':
+                new_b = to_true(b)
+            else:
+                continue
+            if b != new_b:
+                out = out.replace(b, new_b, 1); count += 1; stats['s10'] += 1
+                print(f'  [S10-ResID:{matched_name}] {fname} :: {first.strip()}')
 
     if out != orig:
         with open(fp, 'w', encoding='utf-8') as f:
@@ -168,27 +250,27 @@ if __name__ == '__main__':
     base = sys.argv[1]
     full_dir = sys.argv[2] if len(sys.argv) > 2 else None
 
-    stats = {f's{i}':0 for i in range(1,11)}
+    stats = {f's{i}': 0 for i in range(1, 12)}
     total_files = total_patches = 0
 
-    print('=== Searching for error strings in resources ===')
-    error_str_names = find_error_string_ids(full_dir)
-    print(f'Error string names found: {error_str_names}')
+    print('=== Searching for error resource IDs ===')
+    error_res_ids = get_error_resource_ids(full_dir)
 
-    subdirs = [d for d in ['smali','smali_classes2','smali_classes3','smali_classes4','smali_classes5']
+    subdirs = [d for d in ['smali', 'smali_classes2', 'smali_classes3', 'smali_classes4', 'smali_classes5']
                if os.path.isdir(os.path.join(base, d))]
     print(f'\nSmali dirs: {subdirs}')
 
     for sub in subdirs:
-        for dp,_,files in os.walk(os.path.join(base,sub)):
+        for dp, _, files in os.walk(os.path.join(base, sub)):
             for fn in files:
                 if fn.endswith('.smali'):
                     total_files += 1
-                    total_patches += patch_file(os.path.join(dp,fn), stats, error_str_names)
+                    total_patches += patch_file(os.path.join(dp, fn), stats, error_res_ids)
 
     print(f'\n=== Summary ===')
     print(f'Files   : {total_files}')
     print(f'Patches : {total_patches}')
-    for k,v in stats.items(): print(f'  {k}: {v}')
+    for k, v in stats.items():
+        print(f'  {k}: {v}')
     if total_patches == 0:
         print('WARNING: nothing patched'); sys.exit(2)
