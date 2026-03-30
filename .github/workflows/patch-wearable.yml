@@ -29,12 +29,6 @@ jobs:
         run: |
           java -jar apktool.jar d -f wearable.apk -o decompiled_full 2>&1 | tail -5
 
-      - name: Diagnose SetupWizardWelcomeActivity
-        run: |
-          FILE=$(find decompiled_full/smali*/ -name 'SetupWizardWelcomeActivity.smali')
-          echo "=== SetupWizardWelcomeActivity.smali ==="
-          cat "$FILE"
-
       - name: Decompile smali only (for patching)
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled 2>&1 | tail -3

@@ -162,10 +162,15 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s2'] += 1
                 print(f'  [S2:{name}] {fname}')
 
-    # S3: root/bootloader detection
+    # S3: root/bootloader/custom-binary detection → return false
     for m in re.finditer(
-            r'(\.method\s+[^\n]*(?:isDeviceRooted|isRooted|isBootloaderUnlocked|checkRoot)'
-            r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)',
+            r'(\.method\s+[^\n]*(?:'
+            r'isDeviceRooted|isRooted|isBootloaderUnlocked|checkRoot|'
+            r'isSamsungDeviceWithCustomBinary|isSamsungDeviceWithModifiedOs|'
+            r'isCustomBinary|hasCustomBinary|isCustomKernel|isModifiedOs|'
+            r'isWarrantyBit|isCustomBinaryDetected|hasModifiedOs|'
+            r'isUnauthorizedModification|isDeviceModified'
+            r')[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)',
             out, re.MULTILINE):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
@@ -251,6 +256,24 @@ def patch_file(fp, stats, error_res_ids):
                     out = out.replace(b, r, 1)
                     count += 1; stats['s11'] += 1
                     print(f'  [S11-RevocVoid] {fname} :: {b.split(chr(10))[0].strip()}')
+
+    # S14: PlatformUtils custom binary / modified OS boolean methods → false
+    # These gate-keep SetupWizardWelcomeActivity; returning false means "no custom binary = OK"
+    for name14 in [
+        'isSamsungDeviceWithCustomBinary', 'isSamsungDeviceWithModifiedOs',
+        'isCustomBinary', 'hasCustomBinary', 'isModifiedOs', 'hasModifiedOs',
+        'isUnauthorizedModification', 'isDeviceModified', 'isCustomBinaryDetected',
+    ]:
+        pat14 = (r'(\.method\s+[^\n]*' + re.escape(name14)
+                 + r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)')
+        for m in re.finditer(pat14, out, re.MULTILINE):
+            b = m.group(0)
+            if skip_method(b.split('\n')[0]): continue
+            r = to_false(b)
+            if b != r:
+                out = out.replace(b, r, 1)
+                count += 1; stats['s14'] += 1
+                print(f'  [S14-CustomBin:{name14}] {fname}')
 
     # S12: Knox custom binary / warranty check
     for m in find_methods(out, 'Z'):
@@ -345,7 +368,7 @@ if __name__ == '__main__':
     base = sys.argv[1]
     full_dir = sys.argv[2] if len(sys.argv) > 2 else None
 
-    stats = {f's{i}': 0 for i in range(1, 14)}
+    stats = {f's{i}': 0 for i in range(1, 15)}
     total_files = total_patches = 0
 
     print('=== Searching for error resource IDs ===')
