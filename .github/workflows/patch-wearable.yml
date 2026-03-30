@@ -32,18 +32,25 @@ jobs:
 
       - name: Find error strings
         run: |
-          echo "=== Matching string entries ==="
-          find decompiled_full/res -name '*.xml' 2>/dev/null \
-            | xargs grep -hi 'unauthori\|tamper\|revok\|not_support\|knox\|warranty' 2>/dev/null \
-            | grep '<string' | head -30 || true
-
           echo "=== Error IDs from public.xml ==="
-          grep -i 'unauthori\|tamper\|revok\|not_support\|knox\|warranty' \
+          grep -i 'unauthori\|tamper\|revok\|not_support\|knox\|warranty\|custom_binary' \
             decompiled_full/res/values/public.xml 2>/dev/null | head -30 || echo "(no public.xml)"
 
-          echo "=== Hardcoded error strings in smali ==="
-          grep -r 'const-string.*[Uu]nauthori\|const-string.*[Mm]odif\|const-string.*[Tt]amper' \
-            decompiled_full/smali*/ 2>/dev/null | head -20 || true
+      - name: Diagnose WelcomeActivity flow
+        run: |
+          echo "=== Files calling showCustomBinaryDialog ==="
+          grep -rl 'showCustomBinaryDialog' decompiled_full/smali*/ 2>/dev/null
+
+          echo "=== WelcomeActivityHelper.smali ==="
+          find decompiled_full/smali*/ -name 'WelcomeActivityHelper.smali' | \
+            xargs cat 2>/dev/null | head -150
+
+          echo "=== WelcomeActivity.smali (first 100 lines) ==="
+          find decompiled_full/smali*/ -name 'WelcomeActivity.smali' | \
+            xargs head -n 100 2>/dev/null
+
+          echo "=== Files calling showCustomBinaryDialog (context) ==="
+          grep -rn 'showCustomBinaryDialog' decompiled_full/smali*/ 2>/dev/null
 
       - name: Decompile smali only (for patching)
         run: |
@@ -54,7 +61,7 @@ jobs:
 
       - name: Recompile
         run: |
-          java -jar apktool.jar b decompiled -o wearable_unsigned.apk 2>&1 | tail -5
+          java -jar apktool.jar b decompiled -o wearable_unsigned.apk 2>&1
           echo "Repacked: $(du -sh wearable_unsigned.apk)"
 
       - name: Align and sign
