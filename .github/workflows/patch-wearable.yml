@@ -29,6 +29,25 @@ jobs:
         run: |
           java -jar apktool.jar d -f wearable.apk -o decompiled_full 2>&1 | tail -5
 
+      - name: Diagnose - dump key smali files
+        run: |
+          echo "=== SetupWizardWelcomeActivity.smali ==="
+          find decompiled_full/smali*/ -name 'SetupWizardWelcomeActivity.smali' -exec cat {} \;
+          echo ""
+          echo "=== PlatformUtils.smali ==="
+          find decompiled_full/smali*/ -name 'PlatformUtils.smali' -exec cat {} \;
+          echo ""
+          echo "=== WelcomeActivityHelper.smali (onClick / start methods) ==="
+          find decompiled_full/smali*/ -name 'WelcomeActivityHelper.smali' -exec cat {} \;
+          echo ""
+          echo "=== Files with 'onClick' or 'startSetup' in setup wizard package ==="
+          grep -rl 'onClick\|startSetup\|onClickStart\|onStartButton\|launchNext\|moveToNext\|proceedToNext' \
+            decompiled_full/smali*/ 2>/dev/null | grep -i 'setup\|welcome\|wizard\|intro\|start' | head -20
+          echo ""
+          echo "=== Any smali referencing startActivity from SetupWizard area ==="
+          grep -rl 'startActivity\|startActivityForResult' decompiled_full/smali*/ 2>/dev/null \
+            | grep -i 'setup\|welcome\|wizard' | head -10
+
       - name: Decompile smali only (for patching)
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled 2>&1 | tail -3
