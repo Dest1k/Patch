@@ -2,8 +2,8 @@
 import os, re, sys
 
 
-def count_min_registers(first_line):
-    """Minimum registers = param_registers + 1 local (for our return value)."""
+def count_param_registers(first_line):
+    """Count total parameter registers (including 'this' for non-static)."""
     is_static = 'static' in first_line
     sig = re.search(r'\(([^)]*)\)', first_line)
     params = 0
@@ -14,42 +14,36 @@ def count_min_registers(first_line):
                 end = s.find(';', i)
                 if end == -1: break
                 i = end + 1
+                params += 1
             elif s[i] == '[':
                 i += 1
+            elif s[i] in 'JD':
+                params += 2
+                i += 1
             else:
-                params += 2 if s[i] in 'JD' else 1
+                params += 1
                 i += 1
     if not is_static:
         params += 1  # 'this'
-    return params + 1  # +1 for v0 local
+    return params
 
 
 def get_registers(method):
+    """Return safe register count for a stub: enough for params + at least 1 local."""
     first_line = method.split('\n')[0]
-    minimum = count_min_registers(first_line)
+    n_params = count_param_registers(first_line)
+    min_regs = max(n_params + 1, 2)  # need at least 1 local (v0) beyond params
+
     m = re.search(r'\.registers\s+(\d+)', method)
     if m:
-        return max(int(m.group(1)), minimum)
+        return max(int(m.group(1)), min_regs)
+
     m = re.search(r'\.locals\s+(\d+)', method)
     if m:
-        sig = re.search(r'\(([^)]*)\)', first_line)
-        params = 0
-        if sig:
-            s, i = sig.group(1), 0
-            while i < len(s):
-                if s[i] == 'L':
-                    end = s.find(';', i)
-                    if end == -1: break
-                    i = end + 1
-                elif s[i] == '[':
-                    i += 1
-                else:
-                    params += 2 if s[i] in 'JD' else 1
-                    i += 1
-        if 'static' not in first_line:
-            params += 1
-        return max(int(m.group(1)) + params, minimum)
-    return minimum
+        # .registers = .locals + n_params
+        return max(int(m.group(1)) + n_params, min_regs)
+
+    return min_regs
 
 
 def to_true(m):
@@ -196,18 +190,17 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s4'] += 1
                 print(f'  [S4-Knox] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S5: signature/package verification
+    # S5: APK package signature verification only
+    # Specifically targets android.content.pm.Signature / PackageInfo signatures
+    # Does NOT match java.security.Signature (crypto) to avoid breaking CryptoHelper etc.
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
         sig_check = (
             'PackageInfo;->signatures' in b
             or 'PackageInfo;->signingInfo' in b
-            or ('getPackageInfo' in b and ('signatures' in b.lower()
-                                           or '0x40' in b or '0x44' in b or '0x4000000' in b))
-            or ('Signature' in b and ('digest' in b.lower() or 'hash' in b.lower()
-                                       or 'match' in b.lower() or 'equal' in b.lower()
-                                       or 'verify' in b.lower()))
+            or 'Landroid/content/pm/Signature' in b
+            or ('getPackageInfo' in b and ('0x40' in b or '0x44' in b or '0x4000000' in b))
         )
         if sig_check:
             r = to_true(b)
