@@ -32,7 +32,7 @@ def get_registers(method):
     """Return safe register count for a stub: enough for params + at least 1 local."""
     first_line = method.split('\n')[0]
     n_params = count_param_registers(first_line)
-    min_regs = max(n_params + 1, 2)  # need at least 1 local (v0) beyond params
+    min_regs = max(n_params + 1, 2)
 
     m = re.search(r'\.registers\s+(\d+)', method)
     if m:
@@ -40,7 +40,6 @@ def get_registers(method):
 
     m = re.search(r'\.locals\s+(\d+)', method)
     if m:
-        # .registers = .locals + n_params
         return max(int(m.group(1)) + n_params, min_regs)
 
     return min_regs
@@ -68,7 +67,6 @@ def find_methods(content, ret):
 
 
 def skip_method(first_line):
-    """True if this method must not be given a body."""
     return ('<init>' in first_line or '<clinit>' in first_line
             or 'abstract' in first_line or 'native' in first_line)
 
@@ -119,11 +117,9 @@ def patch_file(fp, stats, error_res_ids):
                 out, re.MULTILINE):
             b = m.group(0)
             first = b.split('\n')[0]
-            if 'native' not in first:
-                continue
+            if 'native' not in first: continue
             ret = re.search(r'\)([ZBSIJFDV]|L[^;]+;)', first.strip())
-            if not ret:
-                continue
+            if not ret: continue
             rt = ret.group(1)
             new_first = re.sub(r'\bnative\b\s*', '', first)
             r = get_registers(b)
@@ -191,8 +187,6 @@ def patch_file(fp, stats, error_res_ids):
                 print(f'  [S4-Knox] {fname} :: {b.split(chr(10))[0].strip()}')
 
     # S5: APK package signature verification only
-    # Specifically targets android.content.pm.Signature / PackageInfo signatures
-    # Does NOT match java.security.Signature (crypto) to avoid breaking CryptoHelper etc.
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
@@ -221,7 +215,7 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s6'] += 1
                 print(f'  [S6-Build] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S8: boolean methods in specific security classes only (skip abstract/native)
+    # S8: boolean methods in specific security classes only
     is_security_class = bool(re.search(
         r'certificatechecker|certificaterevok|'
         r'sakverif|gakverif|verificationmanager|'
@@ -309,6 +303,35 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s10'] += 1
                 print(f'  [S10-ResID:{matched_name}] {fname} :: {first.strip()}')
 
+    # S13: Remove early return-void that follows an error dialog call
+    # Pattern: the caller of showCustomBinaryDialog/showNotSupportedDialog etc.
+    # calls invoke-virtual ...->showXxxDialog(...) then does return-void (early exit).
+    # Since the dialog methods are now no-ops, we also need to remove that
+    # early return so control falls through to normal app initialization.
+    dialog_methods = [
+        'showCustomBinaryDialog',
+        'showNotSupportableDialog',
+        'showNotSupportedDialog',
+        'showUnsupportedDialog',
+        'showErrorDialog',
+        'showCompatibilityError',
+    ]
+    dialog_pattern = '|'.join(re.escape(d) for d in dialog_methods)
+    # Remove: optional if-branch + dialog invoke + return-void
+    # so the code falls through to the normal init path
+    s13_pattern = re.compile(
+        r'(\n\s+if-\w+[^\n]*\n)?'           # optional: if-XXX guard
+        r'(\n\s+invoke-virtual[^\n]*(?:' + dialog_pattern + r')[^\n]*)'  # invoke dialog
+        r'\n\s+return-void',                  # early return we want to remove
+        re.MULTILINE
+    )
+    new_out = s13_pattern.sub(r'\2', out)  # keep only the invoke line (which now is a no-op)
+    if new_out != out:
+        patched = len(s13_pattern.findall(out))
+        count += patched; stats['s13'] += patched
+        out = new_out
+        print(f'  [S13-SkipEarlyReturn] {fname} :: removed {patched} early return(s) after dialog calls')
+
     if out != orig:
         with open(fp, 'w', encoding='utf-8') as f:
             f.write(out)
@@ -322,7 +345,7 @@ if __name__ == '__main__':
     base = sys.argv[1]
     full_dir = sys.argv[2] if len(sys.argv) > 2 else None
 
-    stats = {f's{i}': 0 for i in range(1, 13)}
+    stats = {f's{i}': 0 for i in range(1, 14)}
     total_files = total_patches = 0
 
     print('=== Searching for error resource IDs ===')
