@@ -36,6 +36,22 @@ jobs:
           grep -i 'unauthori\|tamper\|revok\|not_support\|knox\|warranty\|custom_binary' \
             decompiled_full/res/values/public.xml 2>/dev/null | head -30 || echo "(no public.xml)"
 
+      - name: Diagnose WelcomeActivity flow
+        run: |
+          echo "=== Files calling showCustomBinaryDialog ==="
+          grep -rl 'showCustomBinaryDialog' decompiled_full/smali*/ 2>/dev/null
+
+          echo "=== WelcomeActivityHelper.smali ==="
+          find decompiled_full/smali*/ -name 'WelcomeActivityHelper.smali' | \
+            xargs cat 2>/dev/null | head -150
+
+          echo "=== WelcomeActivity.smali (first 100 lines) ==="
+          find decompiled_full/smali*/ -name 'WelcomeActivity.smali' | \
+            xargs head -n 100 2>/dev/null
+
+          echo "=== Files calling showCustomBinaryDialog (context) ==="
+          grep -rn 'showCustomBinaryDialog' decompiled_full/smali*/ 2>/dev/null
+
       - name: Decompile smali only (for patching)
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled 2>&1 | tail -3
