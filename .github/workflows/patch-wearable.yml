@@ -28,29 +28,12 @@ jobs:
       - name: Decompile full (with resources)
         run: |
           java -jar apktool.jar d -f wearable.apk -o decompiled_full 2>&1 | tail -5
-          echo "Smali files: $(find decompiled_full/smali* -name '*.smali' 2>/dev/null | wc -l)"
 
-      - name: Find error strings
+      - name: Diagnose SetupWizardWelcomeActivity
         run: |
-          echo "=== Error IDs from public.xml ==="
-          grep -i 'unauthori\|tamper\|revok\|not_support\|knox\|warranty\|custom_binary' \
-            decompiled_full/res/values/public.xml 2>/dev/null | head -30 || echo "(no public.xml)"
-
-      - name: Diagnose WelcomeActivity flow
-        run: |
-          echo "=== Files calling showCustomBinaryDialog ==="
-          grep -rl 'showCustomBinaryDialog' decompiled_full/smali*/ 2>/dev/null
-
-          echo "=== WelcomeActivityHelper.smali ==="
-          find decompiled_full/smali*/ -name 'WelcomeActivityHelper.smali' | \
-            xargs cat 2>/dev/null | head -150
-
-          echo "=== WelcomeActivity.smali (first 100 lines) ==="
-          find decompiled_full/smali*/ -name 'WelcomeActivity.smali' | \
-            xargs head -n 100 2>/dev/null
-
-          echo "=== Files calling showCustomBinaryDialog (context) ==="
-          grep -rn 'showCustomBinaryDialog' decompiled_full/smali*/ 2>/dev/null
+          FILE=$(find decompiled_full/smali*/ -name 'SetupWizardWelcomeActivity.smali')
+          echo "=== SetupWizardWelcomeActivity.smali ==="
+          cat "$FILE"
 
       - name: Decompile smali only (for patching)
         run: |
