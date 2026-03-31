@@ -29,24 +29,6 @@ jobs:
         run: |
           java -jar apktool.jar d -f wearable.apk -o decompiled_full 2>&1 | tail -5
 
-      - name: Diagnose - dump key smali files
-        run: |
-          echo "=== WelcomeFragment.smali ==="
-          find decompiled_full/smali*/ -name 'WelcomeFragment.smali' -exec cat {} \;
-          echo ""
-          echo "=== RemoveTaskChecker.smali ==="
-          find decompiled_full/smali*/ -name 'RemoveTaskChecker.smali' -exec cat {} \;
-          echo ""
-          echo "=== PermissionFragment.smali ==="
-          find decompiled_full/smali*/ -name 'PermissionFragment.smali' -exec cat {} \;
-          echo ""
-          echo "=== WelcomeActivityHelper$1.smali ==="
-          find decompiled_full/smali*/ -name 'WelcomeActivityHelper$1.smali' -exec cat {} \;
-          echo ""
-          echo "=== SetupWizardWelcomeActivity inner classes ==="
-          find decompiled_full/smali*/ -name 'SetupWizardWelcomeActivity$*.smali' \
-            | sort | while read f; do echo "--- $f ---"; cat "$f"; done
-
       - name: Decompile smali only (for patching)
         run: |
           java -jar apktool.jar d --no-res -f wearable.apk -o decompiled 2>&1 | tail -3

@@ -110,7 +110,7 @@ def patch_file(fp, stats, error_res_ids):
     fname = os.path.basename(fp)
     fname_lower = fname.lower()
 
-    # S9: stub DiagMonKey native methods
+    # ── S9: stub DiagMonKey native methods ────────────────────────────────────
     if 'DiagMonKey' in orig:
         for m in re.finditer(
                 r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)',
@@ -134,7 +134,7 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s9'] += 1
                 print(f'  [S9] {fname} :: {first.strip()}')
 
-    # S1: Build.MANUFACTURER == "samsung" checks
+    # ── S1: Build.MANUFACTURER == "samsung" ───────────────────────────────────
     for m in find_methods(orig, 'Z'):
         b = m.group(0)
         first = b.split('\n')[0]
@@ -146,11 +146,14 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s1'] += 1
                 print(f'  [S1] {fname} :: {first.strip()}')
 
-    # S2: device compatibility check methods by name
-    for name in ['isSamsungDevice', 'isSamsungPhone', 'isSupportedPhone', 'isCompatiblePhone',
-                 'isSupportedDevice', 'checkCompatibility', 'isPhoneSupported', 'isAllowedDevice',
-                 'isSupportedModel', 'isTargetDevice', 'checkDeviceSupport', 'isSamsungGalaxy',
-                 'isGalaxyDevice', 'isSamsungProduct', 'checkPhoneCompatibility']:
+    # ── S2: device compatibility methods → true ───────────────────────────────
+    for name in [
+        'isSamsungDevice', 'isSamsungPhone', 'isSupportedPhone', 'isCompatiblePhone',
+        'isSupportedDevice', 'checkCompatibility', 'isPhoneSupported', 'isAllowedDevice',
+        'isSupportedModel', 'isTargetDevice', 'checkDeviceSupport', 'isSamsungGalaxy',
+        'isGalaxyDevice', 'isSamsungProduct', 'checkPhoneCompatibility',
+        'isSamsungGEDModel',
+    ]:
         pat = (r'(\.method\s+[^\n]*' + re.escape(name)
                + r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)')
         for m in re.finditer(pat, out, re.MULTILINE):
@@ -162,14 +165,15 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s2'] += 1
                 print(f'  [S2:{name}] {fname}')
 
-    # S3: root/bootloader/custom-binary detection → return false
+    # ── S3: root / custom-binary / "bad state" detection → false ──────────────
     for m in re.finditer(
             r'(\.method\s+[^\n]*(?:'
             r'isDeviceRooted|isRooted|isBootloaderUnlocked|checkRoot|'
             r'isSamsungDeviceWithCustomBinary|isSamsungDeviceWithModifiedOs|'
             r'isCustomBinary|hasCustomBinary|isCustomKernel|isModifiedOs|'
             r'isWarrantyBit|isCustomBinaryDetected|hasModifiedOs|'
-            r'isUnauthorizedModification|isDeviceModified'
+            r'isUnauthorizedModification|isDeviceModified|'
+            r'isNotSupportableVendorForWearOSWatch|isNotSupportable'
             r')[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)',
             out, re.MULTILINE):
         b = m.group(0)
@@ -178,9 +182,9 @@ def patch_file(fp, stats, error_res_ids):
         if b != r:
             out = out.replace(b, r, 1)
             count += 1; stats['s3'] += 1
-            print(f'  [S3-Root] {fname} :: {b.split(chr(10))[0].strip()}')
+            print(f'  [S3] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S4: Knox boolean methods
+    # ── S4: Knox boolean methods → true ───────────────────────────────────────
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
@@ -191,7 +195,7 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s4'] += 1
                 print(f'  [S4-Knox] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S5: APK package signature verification only
+    # ── S5: APK package signature verification → true ─────────────────────────
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
@@ -208,7 +212,7 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s5'] += 1
                 print(f'  [S5-Sig] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S6: Build integrity fields in boolean methods
+    # ── S6: Build integrity fields → true ─────────────────────────────────────
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
@@ -220,7 +224,21 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s6'] += 1
                 print(f'  [S6-Build] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S8: boolean methods in specific security classes only
+    # ── S7: StaticConstWrapper.getManufacturer calls that check "samsung" ──────
+    # Methods that build a string comparison against "samsung"/"SAMSUNG" and
+    # return Z — patch them to return true so device looks like Samsung.
+    for m in find_methods(out, 'Z'):
+        b = m.group(0)
+        if skip_method(b.split('\n')[0]): continue
+        if ('StaticConstWrapper;->getManufacturer' in b
+                and re.search(r'["\'](samsung|SAMSUNG)["\']', b)):
+            r = to_true(b)
+            if b != r:
+                out = out.replace(b, r, 1)
+                count += 1; stats['s7'] += 1
+                print(f'  [S7-Manufacturer] {fname} :: {b.split(chr(10))[0].strip()}')
+
+    # ── S8: boolean methods in specific security classes → true ───────────────
     is_security_class = bool(re.search(
         r'certificatechecker|certificaterevok|'
         r'sakverif|gakverif|verificationmanager|'
@@ -237,7 +255,7 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s8'] += 1
                 print(f'  [S8-SecClass] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S11: CertificateRevocationStatus
+    # ── S11: CertificateRevocationStatus ──────────────────────────────────────
     if re.search(r'revok|revocation', fname_lower):
         for m in find_methods(out, 'Z'):
             b = m.group(0)
@@ -257,25 +275,7 @@ def patch_file(fp, stats, error_res_ids):
                     count += 1; stats['s11'] += 1
                     print(f'  [S11-RevocVoid] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S14: PlatformUtils custom binary / modified OS boolean methods → false
-    # These gate-keep SetupWizardWelcomeActivity; returning false means "no custom binary = OK"
-    for name14 in [
-        'isSamsungDeviceWithCustomBinary', 'isSamsungDeviceWithModifiedOs',
-        'isCustomBinary', 'hasCustomBinary', 'isModifiedOs', 'hasModifiedOs',
-        'isUnauthorizedModification', 'isDeviceModified', 'isCustomBinaryDetected',
-    ]:
-        pat14 = (r'(\.method\s+[^\n]*' + re.escape(name14)
-                 + r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)')
-        for m in re.finditer(pat14, out, re.MULTILINE):
-            b = m.group(0)
-            if skip_method(b.split('\n')[0]): continue
-            r = to_false(b)
-            if b != r:
-                out = out.replace(b, r, 1)
-                count += 1; stats['s14'] += 1
-                print(f'  [S14-CustomBin:{name14}] {fname}')
-
-    # S12: Knox custom binary / warranty check
+    # ── S12: Knox custom binary / warranty check ──────────────────────────────
     for m in find_methods(out, 'Z'):
         b = m.group(0)
         if skip_method(b.split('\n')[0]): continue
@@ -298,7 +298,100 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s12'] += 1
                 print(f'  [S12-CustomBinVoid] {fname} :: {b.split(chr(10))[0].strip()}')
 
-    # S10: patch methods referencing error string resource IDs
+    # ── S14: name-based custom binary / modified OS methods → false ───────────
+    for name14 in [
+        'isSamsungDeviceWithCustomBinary', 'isSamsungDeviceWithModifiedOs',
+        'isCustomBinary', 'hasCustomBinary', 'isModifiedOs', 'hasModifiedOs',
+        'isUnauthorizedModification', 'isDeviceModified', 'isCustomBinaryDetected',
+        'isNotSupportableVendorForWearOSWatch', 'isNotSupportable',
+    ]:
+        pat14 = (r'(\.method\s+[^\n]*' + re.escape(name14)
+                 + r'[^\n]*\)Z\n(?:(?!\.end method)[\s\S])*?\.end method)')
+        for m in re.finditer(pat14, out, re.MULTILINE):
+            b = m.group(0)
+            if skip_method(b.split('\n')[0]): continue
+            r = to_false(b)
+            if b != r:
+                out = out.replace(b, r, 1)
+                count += 1; stats['s14'] += 1
+                print(f'  [S14:{name14}] {fname}')
+
+    # ── S15: RemoveTaskChecker.isRunning() → false ────────────────────────────
+    # onResume() calls finish() when onPauseCalled==true AND isRunning()==true.
+    # BT-enable / permission dialogs pause the activity → onPauseCalled=true.
+    # Without this patch the app closes after any system dialog.
+    if re.search(r'removetaskchecker', fname_lower):
+        for m in find_methods(out, 'Z'):
+            b = m.group(0)
+            first = b.split('\n')[0]
+            if skip_method(first): continue
+            if re.search(r'isRunning|isRun\b', first):
+                r = to_false(b)
+                if b != r:
+                    out = out.replace(b, r, 1)
+                    count += 1; stats['s15'] += 1
+                    print(f'  [S15-RemoveTaskChecker] {fname} :: {first.strip()}')
+
+    # ── S16: ParentalRestrictionChecker ───────────────────────────────────────
+    # isAllowed() → true  (no parental restriction)
+    # isBlocked() / isRestricted() / isParentalControlEnabled() → false
+    # launchBlockedScreen() / showBlockedScreen() → void noop
+    if re.search(r'parentalrestriction|parentalcontrol', fname_lower):
+        for m in find_methods(out, 'Z'):
+            b = m.group(0)
+            first = b.split('\n')[0]
+            if skip_method(first): continue
+            if re.search(r'isAllowed|isPermitted|isEnabled\b', first):
+                r = to_true(b)
+            elif re.search(r'isBlocked|isRestricted|isParental|isLocked', first):
+                r = to_false(b)
+            else:
+                continue
+            if b != r:
+                out = out.replace(b, r, 1)
+                count += 1; stats['s16'] += 1
+                print(f'  [S16-Parental] {fname} :: {first.strip()}')
+        for m in find_methods(out, 'V'):
+            b = m.group(0)
+            first = b.split('\n')[0]
+            if skip_method(first): continue
+            if re.search(r'launchBlocked|showBlocked|launchRestricted|showRestricted', first):
+                r = to_void(b)
+                if b != r:
+                    out = out.replace(b, r, 1)
+                    count += 1; stats['s16'] += 1
+                    print(f'  [S16-ParentalVoid] {fname} :: {first.strip()}')
+
+    # ── S17: WelcomeFragment / welcome package device checks ──────────────────
+    # Any boolean method in WelcomeFragment that checks device type / support.
+    is_welcome = re.search(r'welcomefragment|welcomeactivity', fname_lower)
+    if is_welcome:
+        for m in find_methods(out, 'Z'):
+            b = m.group(0)
+            first = b.split('\n')[0]
+            if skip_method(first): continue
+            # Methods that could gate the Start button
+            if re.search(
+                    r'isSamsung|isSupport|isAllow|isCompat|isTarget|'
+                    r'isGalaxy|isDevice|checkDevice|checkSupport|checkExit|'
+                    r'isValid|isAvailable|canProceed|canStart|canLaunch',
+                    first):
+                r = to_true(b)
+                if b != r:
+                    out = out.replace(b, r, 1)
+                    count += 1; stats['s17'] += 1
+                    print(f'  [S17-Welcome] {fname} :: {first.strip()}')
+            elif re.search(
+                    r'isBlocked|isRestricted|isNotSupport|isError|isFailed|'
+                    r'isCustomBinary|isRooted|isModified',
+                    first):
+                r = to_false(b)
+                if b != r:
+                    out = out.replace(b, r, 1)
+                    count += 1; stats['s17'] += 1
+                    print(f'  [S17-WelcomeBlock] {fname} :: {first.strip()}')
+
+    # ── S10: methods referencing error string resource IDs ────────────────────
     if error_res_ids:
         for m in re.finditer(
                 r'(\.method\s+[^\n]*\n(?:(?!\.end method)[\s\S])*?\.end method)',
@@ -326,50 +419,28 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s10'] += 1
                 print(f'  [S10-ResID:{matched_name}] {fname} :: {first.strip()}')
 
-    # S15: RemoveTaskChecker.isRunning() → false
-    # onResume() calls finish() when onPauseCalled==true AND isRunning()==true.
-    # Any system dialog (BT enable, permissions) sets onPauseCalled=true, so if
-    # isRunning() ever returns true the activity closes. Force it to always return false.
-    if re.search(r'removetaskchecker', fname_lower):
-        for m in find_methods(out, 'Z'):
-            b = m.group(0)
-            first = b.split('\n')[0]
-            if skip_method(first): continue
-            if 'isRunning' in first or 'isRun' in first:
-                r = to_false(b)
-                if b != r:
-                    out = out.replace(b, r, 1)
-                    count += 1; stats['s15'] += 1
-                    print(f'  [S15-RemoveTaskChecker] {fname} :: {first.strip()}')
-
-    # S13: Remove early return-void that follows an error dialog call
-    # Pattern: the caller of showCustomBinaryDialog/showNotSupportedDialog etc.
-    # calls invoke-virtual ...->showXxxDialog(...) then does return-void (early exit).
-    # Since the dialog methods are now no-ops, we also need to remove that
-    # early return so control falls through to normal app initialization.
+    # ── S13: remove early exit after error-dialog calls ───────────────────────
+    # showCustomBinaryDialog / showBlockedScreen etc. are now no-ops;
+    # remove the return-void that follows them so the app reaches normal init.
     dialog_methods = [
-        'showCustomBinaryDialog',
-        'showNotSupportableDialog',
-        'showNotSupportedDialog',
-        'showUnsupportedDialog',
-        'showErrorDialog',
-        'showCompatibilityError',
+        'showCustomBinaryDialog', 'showNotSupportableDialog',
+        'showNotSupportedDialog', 'showUnsupportedDialog',
+        'showErrorDialog', 'showCompatibilityError',
+        'launchBlockedScreen', 'showBlockedScreen', 'showParentalBlockedScreen',
     ]
     dialog_pattern = '|'.join(re.escape(d) for d in dialog_methods)
-    # Remove: optional if-branch + dialog invoke + return-void
-    # so the code falls through to the normal init path
     s13_pattern = re.compile(
-        r'(\n\s+if-\w+[^\n]*\n)?'           # optional: if-XXX guard
-        r'(\n\s+invoke-virtual[^\n]*(?:' + dialog_pattern + r')[^\n]*)'  # invoke dialog
-        r'\n\s+return-void',                  # early return we want to remove
+        r'(\n\s+if-\w+[^\n]*\n)?'
+        r'(\n\s+invoke-[^\n]*(?:' + dialog_pattern + r')[^\n]*)'
+        r'\n\s+return-void',
         re.MULTILINE
     )
-    new_out = s13_pattern.sub(r'\2', out)  # keep only the invoke line (which now is a no-op)
+    new_out = s13_pattern.sub(r'\2', out)
     if new_out != out:
         patched = len(s13_pattern.findall(out))
         count += patched; stats['s13'] += patched
         out = new_out
-        print(f'  [S13-SkipEarlyReturn] {fname} :: removed {patched} early return(s) after dialog calls')
+        print(f'  [S13-SkipEarlyReturn] {fname} :: removed {patched} early return(s)')
 
     if out != orig:
         with open(fp, 'w', encoding='utf-8') as f:
@@ -384,7 +455,7 @@ if __name__ == '__main__':
     base = sys.argv[1]
     full_dir = sys.argv[2] if len(sys.argv) > 2 else None
 
-    stats = {f's{i}': 0 for i in range(1, 16)}
+    stats = {f's{i}': 0 for i in range(1, 18)}
     total_files = total_patches = 0
 
     print('=== Searching for error resource IDs ===')
