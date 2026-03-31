@@ -326,6 +326,22 @@ def patch_file(fp, stats, error_res_ids):
                 count += 1; stats['s10'] += 1
                 print(f'  [S10-ResID:{matched_name}] {fname} :: {first.strip()}')
 
+    # S15: RemoveTaskChecker.isRunning() → false
+    # onResume() calls finish() when onPauseCalled==true AND isRunning()==true.
+    # Any system dialog (BT enable, permissions) sets onPauseCalled=true, so if
+    # isRunning() ever returns true the activity closes. Force it to always return false.
+    if re.search(r'removetaskchecker', fname_lower):
+        for m in find_methods(out, 'Z'):
+            b = m.group(0)
+            first = b.split('\n')[0]
+            if skip_method(first): continue
+            if 'isRunning' in first or 'isRun' in first:
+                r = to_false(b)
+                if b != r:
+                    out = out.replace(b, r, 1)
+                    count += 1; stats['s15'] += 1
+                    print(f'  [S15-RemoveTaskChecker] {fname} :: {first.strip()}')
+
     # S13: Remove early return-void that follows an error dialog call
     # Pattern: the caller of showCustomBinaryDialog/showNotSupportedDialog etc.
     # calls invoke-virtual ...->showXxxDialog(...) then does return-void (early exit).
@@ -368,7 +384,7 @@ if __name__ == '__main__':
     base = sys.argv[1]
     full_dir = sys.argv[2] if len(sys.argv) > 2 else None
 
-    stats = {f's{i}': 0 for i in range(1, 15)}
+    stats = {f's{i}': 0 for i in range(1, 16)}
     total_files = total_patches = 0
 
     print('=== Searching for error resource IDs ===')

@@ -31,22 +31,21 @@ jobs:
 
       - name: Diagnose - dump key smali files
         run: |
-          echo "=== SetupWizardWelcomeActivity.smali ==="
-          find decompiled_full/smali*/ -name 'SetupWizardWelcomeActivity.smali' -exec cat {} \;
+          echo "=== WelcomeFragment.smali ==="
+          find decompiled_full/smali*/ -name 'WelcomeFragment.smali' -exec cat {} \;
           echo ""
-          echo "=== PlatformUtils.smali ==="
-          find decompiled_full/smali*/ -name 'PlatformUtils.smali' -exec cat {} \;
+          echo "=== RemoveTaskChecker.smali ==="
+          find decompiled_full/smali*/ -name 'RemoveTaskChecker.smali' -exec cat {} \;
           echo ""
-          echo "=== WelcomeActivityHelper.smali (onClick / start methods) ==="
-          find decompiled_full/smali*/ -name 'WelcomeActivityHelper.smali' -exec cat {} \;
+          echo "=== PermissionFragment.smali ==="
+          find decompiled_full/smali*/ -name 'PermissionFragment.smali' -exec cat {} \;
           echo ""
-          echo "=== Files with 'onClick' or 'startSetup' in setup wizard package ==="
-          grep -rl 'onClick\|startSetup\|onClickStart\|onStartButton\|launchNext\|moveToNext\|proceedToNext' \
-            decompiled_full/smali*/ 2>/dev/null | grep -i 'setup\|welcome\|wizard\|intro\|start' | head -20
+          echo "=== WelcomeActivityHelper$1.smali ==="
+          find decompiled_full/smali*/ -name 'WelcomeActivityHelper$1.smali' -exec cat {} \;
           echo ""
-          echo "=== Any smali referencing startActivity from SetupWizard area ==="
-          grep -rl 'startActivity\|startActivityForResult' decompiled_full/smali*/ 2>/dev/null \
-            | grep -i 'setup\|welcome\|wizard' | head -10
+          echo "=== SetupWizardWelcomeActivity inner classes ==="
+          find decompiled_full/smali*/ -name 'SetupWizardWelcomeActivity$*.smali' \
+            | sort | while read f; do echo "--- $f ---"; cat "$f"; done
 
       - name: Decompile smali only (for patching)
         run: |
